@@ -23,6 +23,8 @@ const state = {
     }),
     notion: createAppState('notion', 'Notion'),
     github: createAppState('github', 'GitHub'),
+    instagram: createAppState('instagram', 'Instagram'),
+    twitter: createAppState('twitter', 'Twitter'),
     links: createAppState('links', 'Links'),
   },
   globalShortcut: 'CommandOrControl+Shift+L',
@@ -31,6 +33,7 @@ const state = {
 const elements = {
   tiles: Array.from(document.querySelectorAll('.tile')),
   contentHost: document.getElementById('content-host'),
+  contentStage: document.getElementById('content-stage'),
   addressForm: document.getElementById('address-form'),
   addressInput: document.getElementById('address-input'),
   navControls: document.querySelector('.nav-controls'),
@@ -112,7 +115,7 @@ function render() {
 }
 
 function publishBounds() {
-  const rect = elements.contentHost.getBoundingClientRect()
+  const rect = elements.contentStage.getBoundingClientRect()
   shell.setContentBounds({
     x: Math.round(rect.x),
     y: Math.round(rect.y),

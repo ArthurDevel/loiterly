@@ -368,6 +368,12 @@ input {
     inset 0 1px 0 rgba(255, 255, 255, 0.88);
 }
 
+.content-stage {
+  position: absolute;
+  inset: 1px 1px 12px 1px;
+  border-radius: 23px;
+}
+
 .main.is-app-mode .content-host {
   margin: 16px;
 }
