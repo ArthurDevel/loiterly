@@ -2,6 +2,7 @@ const path = require('node:path')
 const {
   app,
   BrowserWindow,
+  dialog,
   Menu,
   Tray,
   WebContentsView,
@@ -15,11 +16,40 @@ const {
 const WINDOW_WIDTH = 1140
 const WINDOW_HEIGHT = 760
 const WINDOW_MARGIN = 16
+const POPUP_WIDTH = 720
+const POPUP_HEIGHT = 700
+const POPUP_MARGIN = 48
 const GLOBAL_TOGGLE_SHORTCUT = 'CommandOrControl+Shift+L'
-const BROWSER_PARTITION = 'persist:loiterly-browser'
 const COMPANION_SIZE = 20
 const COMPANION_OFFSET = { x: 10, y: -14 }
 const ACTIVE_SPACE_HOP_DELAY_MS = 140
+const APP_CONFIGS = [
+  {
+    id: 'browser',
+    label: 'Browser',
+    type: 'remote',
+    partition: 'persist:loiterly-browser',
+    initialURL: 'https://www.google.com',
+    showAddressBar: true,
+    showNavigation: true,
+  },
+  {
+    id: 'notion',
+    label: 'Notion',
+    type: 'remote',
+    partition: 'persist:loiterly-notion',
+    initialURL: 'https://www.notion.so',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
+    id: 'links',
+    label: 'Links',
+    type: 'local',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+]
 
 let tray = null
 let mainWindow = null
@@ -34,6 +64,9 @@ let companionPosition = null
 
 const views = new Map()
 const visibleViews = new Set()
+const apps = new Map(APP_CONFIGS.map((appConfig) => [appConfig.id, appConfig]))
+const popupWindows = new Set()
+const configuredPermissionPartitions = new Set()
 
 function createShellWindow() {
   const window = new BrowserWindow({
@@ -91,11 +124,33 @@ function createShellWindow() {
     }, 120)
   })
 
+  window.on('focus', () => {
+    if (isQuitting || !window.isVisible()) {
+      return
+    }
+
+    if (hasOpenPopupWindow()) {
+      closePopupWindows()
+    }
+  })
+
   window.on('closed', () => {
     mainWindow = null
   })
 
+  window.on('move', layoutPopupWindows)
+  window.on('resize', layoutPopupWindows)
+
   return window
+}
+
+function currentCursorDisplay() {
+  const cursor = screen.getCursorScreenPoint()
+  return screen.getDisplayNearestPoint(cursor)
+}
+
+function currentCursorWorkArea() {
+  return currentCursorDisplay().workArea
 }
 
 function createBackdropWindow() {
@@ -198,6 +253,13 @@ function refreshTrayMenu() {
         showWindow()
       },
     },
+    {
+      label: 'Open Notion',
+      click: () => {
+        setActiveApp('notion')
+        showWindow()
+      },
+    },
     { type: 'separator' },
     {
       label: `Shortcut: ${GLOBAL_TOGGLE_SHORTCUT}`,
@@ -217,15 +279,20 @@ function refreshTrayMenu() {
 }
 
 function createViews() {
-  views.set('browser', createBrowserView())
-  views.set('notes', createLocalAppView('Notes', notesMarkup()))
-  views.set('links', createLocalAppView('Links', linksMarkup()))
+  for (const appConfig of APP_CONFIGS) {
+    if (appConfig.type === 'local') {
+      views.set(appConfig.id, createLocalAppView(appConfig))
+      continue
+    }
+
+    views.set(appConfig.id, createHostedAppView(appConfig))
+  }
 }
 
-function createBrowserView() {
+function createHostedAppView(appConfig) {
   const view = new WebContentsView({
     webPreferences: {
-      partition: BROWSER_PARTITION,
+      partition: appConfig.partition,
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
@@ -236,19 +303,26 @@ function createBrowserView() {
   const contents = view.webContents
   const browserSession = contents.session
 
-  browserSession.setPermissionRequestHandler((_wc, _permission, callback) => {
-    callback(false)
-  })
+  configureSessionPermissions(browserSession, appConfig)
 
   contents.setWindowOpenHandler(({ url }) => {
-    navigateBrowser(url)
-    return { action: 'deny' }
+    if (shouldOpenExternally(url)) {
+      shell.openExternal(url)
+      return { action: 'deny' }
+    }
+
+    return popupWindowResponse(appConfig)
   })
 
-  contents.on('will-navigate', (_event, url) => {
-    updateBrowserState({ url })
-  })
+  contents.on('will-navigate', (event, url) => {
+    if (shouldOpenExternally(url)) {
+      event.preventDefault()
+      shell.openExternal(url)
+      return
+    }
 
+    emitState()
+  })
   contents.on('did-start-loading', emitState)
   contents.on('did-stop-loading', emitState)
   contents.on('did-navigate', emitState)
@@ -256,11 +330,279 @@ function createBrowserView() {
   contents.on('page-title-updated', emitState)
   contents.on('page-favicon-updated', emitState)
 
-  contents.loadURL('https://www.google.com')
+  contents.loadURL(appConfig.initialURL)
   return view
 }
 
-function createLocalAppView(title, html) {
+function configureSessionPermissions(browserSession, appConfig) {
+  if (configuredPermissionPartitions.has(appConfig.partition)) {
+    return
+  }
+
+  configuredPermissionPartitions.add(appConfig.partition)
+
+  browserSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    const origin = permissionOrigin(requestingOrigin, details, webContents)
+    if (!isTrustedPermissionOrigin(origin)) {
+      return false
+    }
+
+    return shouldAutoGrantPermission(permission)
+  })
+
+  browserSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const origin = permissionOrigin(details?.requestingUrl, details, webContents)
+    const ownerWindow = permissionOwnerWindow(webContents)
+
+    if (!isTrustedPermissionOrigin(origin)) {
+      console.log(`[permissions] denied ${permission} for untrusted origin ${origin}`)
+      callback(false)
+      return
+    }
+
+    if (shouldAutoGrantPermission(permission)) {
+      console.log(`[permissions] auto-allowed ${permission} for ${origin}`)
+      callback(true)
+      return
+    }
+
+    const permissionName = humanPermissionName(permission)
+    dialog.showMessageBox(ownerWindow, {
+      type: 'question',
+      buttons: ['Allow', 'Deny'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      message: `${appConfig.label} wants ${permissionName}`,
+      detail: `${origin}\n\nAllow this site to use ${permissionName.toLowerCase()}?`,
+    }).then(({ response }) => {
+      const allowed = response === 0
+      console.log(`[permissions] ${allowed ? 'allowed' : 'denied'} ${permission} for ${origin}`)
+      callback(allowed)
+    }).catch(() => {
+      callback(false)
+    })
+  })
+}
+
+function permissionOrigin(requestingUrl, details, webContents) {
+  const candidate =
+    requestingUrl ||
+    details?.requestingUrl ||
+    details?.embeddingOrigin ||
+    details?.securityOrigin ||
+    webContents?.getURL?.() ||
+    ''
+
+  try {
+    return new URL(candidate).origin
+  } catch {
+    return candidate || 'unknown origin'
+  }
+}
+
+function isTrustedPermissionOrigin(origin) {
+  return typeof origin === 'string' && /^https:\/\//i.test(origin)
+}
+
+function shouldAutoGrantPermission(permission) {
+  return (
+    permission === 'fullscreen' ||
+    permission === 'clipboard-sanitized-write' ||
+    permission.includes('storage') ||
+    permission === 'window-management'
+  )
+}
+
+function permissionOwnerWindow(webContents) {
+  if (webContents) {
+    const ownerWindow = BrowserWindow.fromWebContents(webContents)
+    if (ownerWindow && !ownerWindow.isDestroyed()) {
+      return ownerWindow
+    }
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return mainWindow
+  }
+
+  return null
+}
+
+function humanPermissionName(permission) {
+  const labels = {
+    'clipboard-read': 'clipboard read access',
+    'clipboard-sanitized-write': 'clipboard write access',
+    'display-capture': 'screen capture',
+    fullscreen: 'fullscreen control',
+    geolocation: 'location access',
+    'idle-detection': 'idle detection',
+    media: 'camera or microphone access',
+    mediaKeySystem: 'protected media access',
+    midi: 'MIDI access',
+    midiSysex: 'MIDI system exclusive access',
+    notifications: 'notifications',
+    pointerLock: 'pointer lock',
+    keyboardLock: 'keyboard lock',
+    openExternal: 'the ability to open external apps',
+    'speaker-selection': 'speaker selection',
+    'storage-access': 'storage access',
+    'top-level-storage-access': 'top-level storage access',
+    'persistent-storage': 'persistent storage',
+    'window-management': 'screen enumeration',
+    fileSystem: 'file system access',
+    hid: 'hardware security device access',
+    usb: 'USB device access',
+    serial: 'serial device access',
+  }
+
+  return labels[permission] || permission
+}
+
+function popupWindowResponse(appConfig) {
+  return {
+    action: 'allow',
+    overrideBrowserWindowOptions: {
+      width: POPUP_WIDTH,
+      height: POPUP_HEIGHT,
+      minWidth: 420,
+      minHeight: 560,
+      show: false,
+      hasShadow: true,
+      backgroundColor: '#0b1220',
+      autoHideMenuBar: true,
+      fullscreenable: false,
+      maximizable: false,
+      minimizable: true,
+      resizable: true,
+      movable: true,
+      skipTaskbar: true,
+      titleBarStyle: 'hiddenInset',
+      parent: mainWindow || undefined,
+      modal: false,
+      webPreferences: {
+        partition: appConfig.partition,
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        autoplayPolicy: 'user-gesture-required',
+      },
+    },
+    outlivesOpener: false,
+    createWindow: (options) => {
+      const popupWindow = new BrowserWindow(options)
+      popupWindows.add(popupWindow)
+      popupWindow.setAlwaysOnTop(true, 'floating')
+      popupWindow.setWindowButtonVisibility(true)
+      centerPopupWindow(popupWindow)
+
+      popupWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (shouldOpenExternally(url)) {
+          shell.openExternal(url)
+          return { action: 'deny' }
+        }
+
+        return popupWindowResponse(appConfig)
+      })
+
+      popupWindow.on('closed', () => {
+        popupWindows.delete(popupWindow)
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+          mainWindow.focus()
+        }
+      })
+
+      popupWindow.once('ready-to-show', () => {
+        if (!popupWindow.isDestroyed()) {
+          centerPopupWindow(popupWindow)
+          showOnActiveSpace(popupWindow, () => {
+            popupWindow.show()
+            popupWindow.focus()
+          })
+        }
+      })
+
+      return popupWindow.webContents
+    },
+  }
+}
+
+function centerPopupWindow(popupWindow) {
+  if (!popupWindow || popupWindow.isDestroyed()) {
+    return
+  }
+
+  const cursorDisplay = currentCursorDisplay()
+  const cursorArea = cursorDisplay.workArea
+  const anchorWindow = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  const parentBounds = anchorWindow && isWindowOnDisplay(anchorWindow, cursorDisplay)
+    ? anchorWindow.getBounds()
+    : cursorArea
+  const popupBounds = popupWindow.getBounds()
+  const width = Math.min(popupBounds.width, Math.max(420, parentBounds.width - POPUP_MARGIN * 2))
+  const height = Math.min(popupBounds.height, Math.max(560, parentBounds.height - POPUP_MARGIN * 2))
+
+  popupWindow.setBounds({
+    x: Math.round(parentBounds.x + (parentBounds.width - width) / 2),
+    y: Math.round(parentBounds.y + (parentBounds.height - height) / 2),
+    width,
+    height,
+  })
+}
+
+function isWindowOnDisplay(window, display) {
+  if (!window || window.isDestroyed()) {
+    return false
+  }
+
+  const bounds = window.getBounds()
+  const centerPoint = {
+    x: Math.round(bounds.x + bounds.width / 2),
+    y: Math.round(bounds.y + bounds.height / 2),
+  }
+
+  return screen.getDisplayNearestPoint(centerPoint).id === display.id
+}
+
+function layoutPopupWindows() {
+  for (const popupWindow of [...popupWindows]) {
+    if (!popupWindow || popupWindow.isDestroyed()) {
+      popupWindows.delete(popupWindow)
+      continue
+    }
+
+    centerPopupWindow(popupWindow)
+  }
+}
+
+function placeWindowGroupNearCursor() {
+  if (!mainWindow || !backdropWindow) {
+    return
+  }
+
+  const cursor = screen.getCursorScreenPoint()
+  const workArea = currentCursorWorkArea()
+  const origin = clampWindowOrigin({
+    x: cursor.x + 24,
+    y: cursor.y - WINDOW_HEIGHT + 32,
+  })
+
+  backdropWindow.setBounds({
+    x: workArea.x,
+    y: workArea.y,
+    width: workArea.width,
+    height: workArea.height,
+  })
+
+  mainWindow.setBounds({
+    x: origin.x,
+    y: origin.y,
+    width: WINDOW_WIDTH,
+    height: WINDOW_HEIGHT,
+  })
+}
+
+function createLocalAppView(appConfig) {
   const view = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
@@ -269,10 +611,11 @@ function createLocalAppView(title, html) {
     },
   })
 
+  const html = appConfig.id === 'links' ? linksMarkup() : ''
   view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
   view.webContents.on('page-title-updated', emitState)
   view.webContents.on('did-finish-load', emitState)
-  view.webContents.executeJavaScript(`document.title = ${JSON.stringify(title)}`)
+  view.webContents.executeJavaScript(`document.title = ${JSON.stringify(appConfig.label)}`)
   return view
 }
 function ensureVisibleView(appId) {
@@ -316,7 +659,7 @@ function layoutActiveView() {
 }
 
 function setActiveApp(appId) {
-  if (!views.has(appId)) {
+  if (!apps.has(appId) || !views.has(appId)) {
     return
   }
 
@@ -353,43 +696,93 @@ function navigateBrowser(input) {
   browserView.webContents.loadURL(target)
 }
 
-function updateBrowserState(partial = {}) {
-  emitState(partial)
-}
-
-function browserState() {
-  const browserView = views.get('browser')
-  if (!browserView) {
-    return {
-      url: '',
-      title: 'Loiterly Browser',
-      canGoBack: false,
-      canGoForward: false,
-      isLoading: false,
-    }
+function openAppURL(appId, target) {
+  if (shouldOpenExternally(target)) {
+    shell.openExternal(target)
+    return
   }
 
-  const contents = browserView.webContents
+  const view = views.get(appId)
+  if (!view) {
+    return
+  }
+
+  view.webContents.loadURL(target)
+}
+
+function shouldOpenExternally(target) {
+  if (!target) {
+    return false
+  }
+
+  try {
+    const { protocol } = new URL(target)
+    return protocol !== 'http:' && protocol !== 'https:'
+  } catch {
+    return false
+  }
+}
+
+function defaultAppState(appId) {
+  const appConfig = apps.get(appId)
+
   return {
-    url: contents.getURL() || '',
-    title: contents.getTitle() || 'Loiterly Browser',
-    canGoBack: contents.navigationHistory.canGoBack(),
-    canGoForward: contents.navigationHistory.canGoForward(),
-    isLoading: contents.isLoading(),
+    id: appId,
+    title: appConfig ? appConfig.label : 'Loiterly',
+    url: appConfig && appConfig.showAddressBar ? appConfig.initialURL || '' : '',
+    canGoBack: false,
+    canGoForward: false,
+    isLoading: false,
+    showAddressBar: appConfig ? appConfig.showAddressBar : false,
+    showNavigation: appConfig ? appConfig.showNavigation : false,
   }
 }
 
-function emitState(overrides = {}) {
+function appState(appId) {
+  const view = views.get(appId)
+  if (!view) {
+    return defaultAppState(appId)
+  }
+
+  const appConfig = apps.get(appId)
+  const contents = view.webContents
+  if (!contents || contents.isDestroyed()) {
+    return defaultAppState(appId)
+  }
+
+  const isRemoteApp = appConfig && appConfig.type === 'remote'
+  const navigationHistory = contents.navigationHistory
+
+  return {
+    id: appId,
+    url: appConfig && appConfig.showAddressBar ? (contents.getURL() || appConfig.initialURL || '') : '',
+    title: contents.getTitle() || (appConfig ? appConfig.label : 'Loiterly'),
+    canGoBack: isRemoteApp && navigationHistory ? navigationHistory.canGoBack() : false,
+    canGoForward: isRemoteApp && navigationHistory ? navigationHistory.canGoForward() : false,
+    isLoading: contents.isLoading(),
+    showAddressBar: appConfig ? appConfig.showAddressBar : false,
+    showNavigation: appConfig ? appConfig.showNavigation : false,
+  }
+}
+
+function allAppStates() {
+  const state = {}
+
+  for (const appConfig of APP_CONFIGS) {
+    state[appConfig.id] = appState(appConfig.id)
+  }
+
+  return state
+}
+
+function emitState() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
 
   mainWindow.webContents.send('shell:state', {
     activeApp,
-    browser: {
-      ...browserState(),
-      ...overrides,
-    },
+    apps: allAppStates(),
     globalShortcut: GLOBAL_TOGGLE_SHORTCUT,
   })
 
@@ -417,30 +810,11 @@ function showWindow() {
     return
   }
 
-  const cursor = screen.getCursorScreenPoint()
-  const display = screen.getDisplayNearestPoint(cursor)
-  const workArea = display.workArea
-  const origin = clampWindowOrigin({
-    x: cursor.x + 24,
-    y: cursor.y - WINDOW_HEIGHT + 32,
-  })
-
-  backdropWindow.setBounds({
-    x: workArea.x,
-    y: workArea.y,
-    width: workArea.width,
-    height: workArea.height,
-  })
+  placeWindowGroupNearCursor()
   showOnActiveSpace(backdropWindow, () => {
     backdropWindow.showInactive()
   })
 
-  mainWindow.setBounds({
-    x: origin.x,
-    y: origin.y,
-    width: WINDOW_WIDTH,
-    height: WINDOW_HEIGHT,
-  })
   showOnActiveSpace(mainWindow, () => {
     mainWindow.show()
     app.focus({ steal: true })
@@ -455,6 +829,7 @@ function hideWindow() {
     return
   }
 
+  closePopupWindows()
   mainWindow.hide()
   backdropWindow.hide()
   refreshTrayMenu()
@@ -497,7 +872,55 @@ function shouldIgnoreBlurHide() {
   const display = screen.getDisplayNearestPoint(cursor)
   const topHotzone = display.bounds.y + 6
 
-  return cursor.y <= topHotzone
+  return cursor.y <= topHotzone || isFocusWithinWindowGroup()
+}
+
+function isFocusWithinWindowGroup() {
+  const focusedWindow = BrowserWindow.getFocusedWindow()
+  if (!focusedWindow || focusedWindow.isDestroyed()) {
+    return false
+  }
+
+  if (focusedWindow === mainWindow) {
+    return true
+  }
+
+  for (const popupWindow of [...popupWindows]) {
+    if (!popupWindow || popupWindow.isDestroyed()) {
+      popupWindows.delete(popupWindow)
+      continue
+    }
+
+    if (popupWindow === focusedWindow) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function hasOpenPopupWindow() {
+  for (const popupWindow of [...popupWindows]) {
+    if (!popupWindow || popupWindow.isDestroyed()) {
+      popupWindows.delete(popupWindow)
+      continue
+    }
+
+    return true
+  }
+
+  return false
+}
+
+function closePopupWindows() {
+  for (const popupWindow of [...popupWindows]) {
+    if (!popupWindow || popupWindow.isDestroyed()) {
+      popupWindows.delete(popupWindow)
+      continue
+    }
+
+    popupWindow.close()
+  }
 }
 
 function startCompanionLoop() {
@@ -585,42 +1008,6 @@ function toggleCompanion() {
   }
 }
 
-function notesMarkup() {
-  return `
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>Notes</title>
-        <style>
-          body {
-            margin: 0;
-            padding: 24px;
-            background: #091221;
-            color: #eaf4ff;
-            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-          }
-          h1 { margin: 0 0 16px; font-size: 24px; }
-          .card {
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 20px;
-            padding: 20px;
-            background: rgba(255,255,255,0.05);
-            line-height: 1.5;
-            max-width: 720px;
-          }
-        </style>
-      </head>
-      <body>
-        <h1>Notes</h1>
-        <div class="card">
-          This tile is a persistent Chromium view. It stays alive when the frame hides, which is the main behavior we want for future apps.
-        </div>
-      </body>
-    </html>
-  `
-}
-
 function linksMarkup() {
   return `
     <!doctype html>
@@ -693,7 +1080,7 @@ function createTrayIconDataUrl() {
 
 ipcMain.handle('shell:get-state', async () => ({
   activeApp,
-  browser: browserState(),
+  apps: allAppStates(),
   globalShortcut: GLOBAL_TOGGLE_SHORTCUT,
 }))
 
