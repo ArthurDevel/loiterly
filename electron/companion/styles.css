@@ -1,0 +1,65 @@
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  display: grid;
+  place-items: center;
+}
+
+.companion {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  filter: drop-shadow(0 2px 4px rgba(14, 103, 255, 0.35));
+}
+
+.triangle {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, #52b7ff 0%, #0d63ff 100%);
+  clip-path: polygon(12% 8%, 78% 50%, 24% 92%);
+}
+
+.triangle::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(12% 8%, 78% 50%, 24% 92%);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  box-sizing: border-box;
+}
+
+.sparkle {
+  position: absolute;
+  right: 2px;
+  top: 1px;
+  width: 6px;
+  height: 6px;
+}
+
+.sparkle::before,
+.sparkle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+}
+
+.sparkle::before {
+  width: 1.3px;
+  height: 6px;
+}
+
+.sparkle::after {
+  width: 6px;
+  height: 1.3px;
+}

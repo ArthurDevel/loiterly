@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loiterly</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand drag-region">
+          <div class="brand-mark">▲</div>
+          <div class="brand-copy">
+            <strong>Loiterly</strong>
+            <span>Chromium shell</span>
+          </div>
+        </div>
+
+        <nav class="tiles">
+          <button class="tile is-active" data-app="browser">
+            <span class="tile-icon">◎</span>
+            <span>Browser</span>
+          </button>
+          <button class="tile" data-app="notes">
+            <span class="tile-icon">◌</span>
+            <span>Notes</span>
+          </button>
+          <button class="tile" data-app="links">
+            <span class="tile-icon">✦</span>
+            <span>Links</span>
+          </button>
+        </nav>
+
+        <div class="rail-footer">
+          <div class="shortcut-label">Global shortcut</div>
+          <div id="global-shortcut">Cmd/Ctrl + Shift + L</div>
+          <p>Use the tray icon or this shortcut to show or hide the floating frame.</p>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="toolbar drag-region">
+          <div class="window-actions no-drag">
+            <button id="hide-window" class="ghost-button" title="Hide window">Hide</button>
+          </div>
+
+          <div class="nav-controls no-drag">
+            <button id="go-back" class="icon-button" aria-label="Back">←</button>
+            <button id="go-forward" class="icon-button" aria-label="Forward">→</button>
+            <button id="reload" class="icon-button" aria-label="Reload">↻</button>
+          </div>
+
+          <form id="address-form" class="address-form no-drag">
+            <input id="address-input" type="text" autocomplete="off" spellcheck="false" placeholder="Enter a URL or search" />
+          </form>
+
+          <div class="page-meta">
+            <div id="page-title">Loiterly Browser</div>
+            <div id="page-status">Ready</div>
+          </div>
+        </header>
+
+        <section id="content-host" class="content-host"></section>
+      </main>
+    </div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

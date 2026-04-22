@@ -3,11 +3,12 @@ import SwiftUI
 
 @MainActor
 final class OverlayWindowController {
-    private let size = CGSize(width: 320, height: 200)
+    private let size = CGSize(width: 980, height: 680)
     private let cursorOffset = CGPoint(x: 24, y: -24)
+    private let browserStore = BrowserStore()
 
-    private lazy var window: NSWindow = {
-        let window = NSWindow(
+    private lazy var window: OverlayWindow = {
+        let window = OverlayWindow(
             contentRect: CGRect(origin: .zero, size: size),
             styleMask: .borderless,
             backing: .buffered,
@@ -15,11 +16,12 @@ final class OverlayWindowController {
         )
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = false
-        window.ignoresMouseEvents = true
+        window.hasShadow = true
+        window.ignoresMouseEvents = false
+        window.isMovableByWindowBackground = true
         window.level = .statusBar
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        window.contentView = NSHostingView(rootView: OverlayView())
+        window.contentView = NSHostingView(rootView: OverlayView(browserStore: browserStore))
         return window
     }()
 
@@ -32,7 +34,8 @@ final class OverlayWindowController {
 
         window.setFrameOrigin(clampedOrigin(for: proposedOrigin))
         window.alphaValue = 0
-        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
