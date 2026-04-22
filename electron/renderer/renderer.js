@@ -22,6 +22,7 @@ const state = {
       showNavigation: true,
     }),
     notion: createAppState('notion', 'Notion'),
+    github: createAppState('github', 'GitHub'),
     links: createAppState('links', 'Links'),
   },
   globalShortcut: 'CommandOrControl+Shift+L',
