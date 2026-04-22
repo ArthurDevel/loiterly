@@ -161,9 +161,14 @@ function createCompanionWindow() {
 function createTray() {
   const image = nativeImage.createFromDataURL(createTrayIconDataUrl())
   image.setTemplateImage(true)
+  const trayImage = image.resize({ width: 18, height: 18 })
+  trayImage.setTemplateImage(true)
 
-  tray = new Tray(image)
+  tray = new Tray(trayImage)
   tray.setToolTip('Loiterly')
+  if (process.platform === 'darwin') {
+    tray.setTitle('L')
+  }
   tray.on('click', toggleWindowVisibility)
   refreshTrayMenu()
 }
@@ -677,9 +682,9 @@ function linksMarkup() {
 
 function createTrayIconDataUrl() {
   const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
-      <path fill="black" d="M3 2.5L14.5 9L3 15.5V2.5Z"/>
-      <path stroke="black" stroke-width="1.1" stroke-linecap="round" d="M13.7 3.6V6.8M12.1 5.2H15.3M12.55 4.05L14.85 6.35M14.85 4.05L12.55 6.35"/>
+    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+      <path fill="black" d="M4 3.25L16.5 11L4 18.75V3.25Z"/>
+      <path fill="black" d="M14.9 4.7H16.1V7.3H18.7V8.5H16.1V11.1H14.9V8.5H12.3V7.3H14.9Z"/>
     </svg>
   `
 
