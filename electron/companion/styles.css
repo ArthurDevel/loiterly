@@ -16,13 +16,13 @@ body {
   position: relative;
   width: 20px;
   height: 20px;
-  filter: drop-shadow(0 2px 4px rgba(14, 103, 255, 0.35));
+  filter: drop-shadow(0 4px 8px rgba(74, 132, 245, 0.2));
 }
 
 .triangle {
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, #52b7ff 0%, #0d63ff 100%);
+  background: linear-gradient(135deg, #8ab9ff 0%, #4a84f5 100%);
   clip-path: polygon(12% 8%, 78% 50%, 24% 92%);
 }
 
@@ -31,7 +31,7 @@ body {
   position: absolute;
   inset: 0;
   clip-path: polygon(12% 8%, 78% 50%, 24% 92%);
-  border: 1px solid rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.84);
   box-sizing: border-box;
 }
 

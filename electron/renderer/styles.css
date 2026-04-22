@@ -1,14 +1,21 @@
 :root {
-  color-scheme: dark;
-  --bg: rgba(7, 14, 26, 0.92);
-  --panel: rgba(255, 255, 255, 0.06);
-  --panel-strong: rgba(255, 255, 255, 0.1);
-  --text: rgba(243, 248, 255, 0.96);
-  --muted: rgba(210, 225, 245, 0.6);
-  --accent: #3aa7ff;
-  --accent-strong: #0e67ff;
-  --border: rgba(255, 255, 255, 0.12);
-  --shadow: rgba(0, 0, 0, 0.34);
+  color-scheme: light;
+  --canvas: #edf2f7;
+  --shell: rgba(252, 253, 255, 0.72);
+  --shell-highlight: rgba(255, 255, 255, 0.94);
+  --panel: rgba(255, 255, 255, 0.5);
+  --panel-strong: rgba(255, 255, 255, 0.74);
+  --panel-hover: rgba(255, 255, 255, 0.88);
+  --text: #172030;
+  --muted: #617086;
+  --muted-strong: #445163;
+  --accent: #4a84f5;
+  --accent-soft: rgba(74, 132, 245, 0.16);
+  --accent-strong: #2e68db;
+  --border: rgba(147, 163, 184, 0.3);
+  --border-strong: rgba(123, 141, 167, 0.42);
+  --shadow: rgba(103, 120, 146, 0.18);
+  --shadow-strong: rgba(103, 120, 146, 0.22);
 }
 
 * {
@@ -26,7 +33,7 @@ body {
 }
 
 body {
-  padding: 16px;
+  padding: 18px;
 }
 
 button,
@@ -35,18 +42,46 @@ input {
 }
 
 .shell {
+  position: relative;
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
-  height: calc(100vh - 32px);
+  height: calc(100vh - 36px);
   background:
-    radial-gradient(circle at top left, rgba(58, 167, 255, 0.16), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(14, 103, 255, 0.2), transparent 24%),
-    var(--bg);
-  border: 1px solid rgba(116, 181, 255, 0.28);
-  border-radius: 28px;
-  box-shadow: 0 24px 54px var(--shadow);
-  backdrop-filter: blur(26px);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(248, 250, 253, 0.66)),
+    var(--shell);
+  border: 1px solid var(--border);
+  border-radius: 30px;
+  box-shadow:
+    0 20px 48px var(--shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(30px) saturate(135%);
   overflow: hidden;
+}
+
+.shell::before,
+.shell::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  inset: auto;
+  border-radius: 999px;
+  filter: blur(10px);
+}
+
+.shell::before {
+  width: 280px;
+  height: 280px;
+  top: -120px;
+  left: -70px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0));
+}
+
+.shell::after {
+  width: 260px;
+  height: 260px;
+  right: -90px;
+  bottom: -110px;
+  background: radial-gradient(circle, rgba(182, 211, 255, 0.34), rgba(182, 211, 255, 0));
 }
 
 .rail {
@@ -54,8 +89,10 @@ input {
   flex-direction: column;
   gap: 18px;
   padding: 18px 14px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03));
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(248, 250, 252, 0.34));
+  border-right: 1px solid rgba(147, 163, 184, 0.18);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.5);
+  z-index: 1;
 }
 
 .brand {
@@ -71,9 +108,11 @@ input {
   display: grid;
   place-items: center;
   border-radius: 10px;
-  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  background: linear-gradient(180deg, #7cb0ff, var(--accent));
   color: white;
-  box-shadow: 0 6px 18px rgba(58, 167, 255, 0.35);
+  box-shadow:
+    0 10px 18px rgba(74, 132, 245, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
 .brand-copy {
@@ -106,37 +145,50 @@ input {
   padding: 14px 12px;
   min-height: 86px;
   border-radius: 18px;
-  border: 1px solid transparent;
-  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0);
+  background: rgba(255, 255, 255, 0.26);
   color: var(--muted);
   cursor: pointer;
-  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+  transition:
+    transform 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease;
 }
 
 .tile:hover {
   transform: translateY(-1px);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.58);
+  border-color: rgba(173, 184, 201, 0.28);
+  box-shadow: 0 10px 24px rgba(116, 129, 154, 0.08);
 }
 
 .tile.is-active {
-  background: linear-gradient(180deg, rgba(58, 167, 255, 0.24), rgba(14, 103, 255, 0.3));
-  border-color: rgba(110, 193, 255, 0.4);
-  color: white;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 253, 0.9)),
+    var(--panel-strong);
+  border-color: rgba(123, 141, 167, 0.22);
+  box-shadow:
+    0 16px 32px rgba(116, 129, 154, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  color: var(--text);
 }
 
 .tile-icon {
   font-size: 17px;
+  color: var(--accent-strong);
 }
 
 .rail-footer {
   margin-top: auto;
-  padding: 12px;
+  padding: 8px;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.38);
+  border: 1px solid rgba(173, 184, 201, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
-.rail-footer p,
 .shortcut-label,
 #global-shortcut {
   margin: 0;
@@ -149,23 +201,37 @@ input {
   color: var(--muted);
 }
 
-#global-shortcut {
-  margin-top: 5px;
-  font-size: 12px;
-  font-weight: 600;
+.shortcut {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
 }
 
-.rail-footer p {
-  margin-top: 8px;
+.shortcut-key {
+  min-width: 22px;
+  height: 24px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid rgba(173, 184, 201, 0.28);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 6px 16px rgba(103, 120, 146, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  color: var(--muted-strong);
   font-size: 11px;
-  line-height: 1.45;
-  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .main {
   display: grid;
   grid-template-rows: 68px minmax(0, 1fr);
   min-width: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.14));
 }
 
 .main.is-app-mode {
@@ -178,7 +244,7 @@ input {
   align-items: center;
   gap: 12px;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(147, 163, 184, 0.18);
 }
 
 .toolbar.is-app-mode {
@@ -199,10 +265,31 @@ input {
 .icon-button {
   height: 34px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(173, 184, 201, 0.28);
+  background: rgba(255, 255, 255, 0.52);
   color: var(--text);
   cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.ghost-button:hover,
+.icon-button:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.84);
+  border-color: var(--border-strong);
+  box-shadow:
+    0 8px 18px rgba(103, 120, 146, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.ghost-button:disabled,
+.icon-button:disabled {
+  color: rgba(97, 112, 134, 0.45);
+  background: rgba(255, 255, 255, 0.3);
+  box-shadow: none;
+  cursor: default;
+  transform: none;
 }
 
 .ghost-button {
@@ -220,17 +307,26 @@ input {
 #address-input {
   width: 100%;
   height: 40px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(173, 184, 201, 0.24);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.62);
   color: var(--text);
   padding: 0 14px;
   outline: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    0 1px 2px rgba(103, 120, 146, 0.06);
 }
 
 #address-input:focus {
-  border-color: rgba(110, 193, 255, 0.42);
-  box-shadow: 0 0 0 4px rgba(58, 167, 255, 0.12);
+  border-color: rgba(74, 132, 245, 0.36);
+  box-shadow:
+    0 0 0 4px rgba(74, 132, 245, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+#address-input::placeholder {
+  color: rgba(97, 112, 134, 0.72);
 }
 
 .page-meta {
@@ -264,9 +360,12 @@ input {
   border-radius: 24px;
   overflow: hidden;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
-    rgba(4, 10, 20, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(247, 249, 252, 0.84)),
+    rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(173, 184, 201, 0.22);
+  box-shadow:
+    0 18px 40px rgba(103, 120, 146, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
 }
 
 .main.is-app-mode .content-host {
