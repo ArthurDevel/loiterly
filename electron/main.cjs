@@ -23,12 +23,13 @@ const GLOBAL_TOGGLE_SHORTCUT = 'CommandOrControl+Shift+L'
 const COMPANION_SIZE = 20
 const COMPANION_OFFSET = { x: 10, y: -14 }
 const ACTIVE_SPACE_HOP_DELAY_MS = 140
+const SHARED_REMOTE_PARTITION = 'persist:loiterly-browser'
 const APP_CONFIGS = [
   {
     id: 'browser',
     label: 'Browser',
     type: 'remote',
-    partition: 'persist:loiterly-browser',
+    partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://www.google.com',
     showAddressBar: true,
     showNavigation: true,
@@ -37,8 +38,17 @@ const APP_CONFIGS = [
     id: 'notion',
     label: 'Notion',
     type: 'remote',
-    partition: 'persist:loiterly-notion',
+    partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://www.notion.so',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
+    id: 'github',
+    label: 'GitHub',
+    type: 'remote',
+    partition: SHARED_REMOTE_PARTITION,
+    initialURL: 'https://github.com',
     showAddressBar: false,
     showNavigation: false,
   },
@@ -257,6 +267,13 @@ function refreshTrayMenu() {
       label: 'Open Notion',
       click: () => {
         setActiveApp('notion')
+        showWindow()
+      },
+    },
+    {
+      label: 'Open GitHub',
+      click: () => {
+        setActiveApp('github')
         showWindow()
       },
     },
