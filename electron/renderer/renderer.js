@@ -26,6 +26,25 @@ const elements = {
   globalShortcut: document.getElementById('global-shortcut'),
 }
 
+function formatShortcut(shortcut) {
+  const isMac = navigator.platform.toUpperCase().includes('MAC')
+  const symbolMap = {
+    CommandOrControl: isMac ? '⌘' : 'Ctrl',
+    Command: '⌘',
+    Control: isMac ? '⌃' : 'Ctrl',
+    Ctrl: isMac ? '⌃' : 'Ctrl',
+    Shift: '⇧',
+    Alt: isMac ? '⌥' : 'Alt',
+    Option: '⌥',
+  }
+
+  return shortcut
+    .split('+')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => symbolMap[part] || part.toUpperCase())
+}
+
 function render() {
   elements.tiles.forEach((tile) => {
     tile.classList.toggle('is-active', tile.dataset.app === state.activeApp)
@@ -52,7 +71,14 @@ function render() {
     ? (state.browser.isLoading ? 'Loading...' : 'Ready')
     : 'Persistent view'
 
-  elements.globalShortcut.textContent = state.globalShortcut
+  elements.globalShortcut.replaceChildren(
+    ...formatShortcut(state.globalShortcut).map((part) => {
+      const key = document.createElement('span')
+      key.className = 'shortcut-key'
+      key.textContent = part
+      return key
+    })
+  )
 }
 
 function publishBounds() {

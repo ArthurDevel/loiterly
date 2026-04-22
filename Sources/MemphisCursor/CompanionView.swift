@@ -7,8 +7,8 @@ struct CompanionView: View {
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(red: 0.28, green: 0.72, blue: 1.0),
-                            Color(red: 0.03, green: 0.38, blue: 0.96),
+                            Color(red: 0.54, green: 0.73, blue: 1.0),
+                            Color(red: 0.29, green: 0.52, blue: 0.96),
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -16,7 +16,7 @@ struct CompanionView: View {
                 )
                 .overlay {
                     Triangle()
-                        .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                        .stroke(Color.white.opacity(0.84), lineWidth: 1)
                 }
 
             Sparkle()
@@ -25,7 +25,7 @@ struct CompanionView: View {
                 .offset(x: 4, y: -5)
         }
         .frame(width: 20, height: 20)
-        .shadow(color: Color.blue.opacity(0.35), radius: 4, y: 2)
+        .shadow(color: Color(red: 0.29, green: 0.52, blue: 0.96).opacity(0.2), radius: 6, y: 3)
         .accessibilityLabel("Cursor companion")
     }
 }

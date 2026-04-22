@@ -593,21 +593,35 @@ function notesMarkup() {
         <meta charset="utf-8" />
         <title>Notes</title>
         <style>
+          :root {
+            color-scheme: light;
+          }
           body {
             margin: 0;
-            padding: 24px;
-            background: #091221;
-            color: #eaf4ff;
+            min-height: 100vh;
+            padding: 28px;
+            background:
+              radial-gradient(circle at top left, rgba(255,255,255,0.85), rgba(255,255,255,0) 38%),
+              linear-gradient(180deg, #fbfcfe 0%, #edf2f7 100%);
+            color: #172030;
             font-family: -apple-system, BlinkMacSystemFont, sans-serif;
           }
-          h1 { margin: 0 0 16px; font-size: 24px; }
+          h1 {
+            margin: 0 0 16px;
+            font-size: 24px;
+            letter-spacing: -0.03em;
+          }
           .card {
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 20px;
-            padding: 20px;
-            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(173,184,201,0.24);
+            border-radius: 22px;
+            padding: 22px;
+            background: rgba(255,255,255,0.72);
+            box-shadow:
+              0 18px 40px rgba(103,120,146,0.12),
+              inset 0 1px 0 rgba(255,255,255,0.92);
             line-height: 1.5;
             max-width: 720px;
+            color: #445163;
           }
         </style>
       </head>
@@ -629,14 +643,24 @@ function linksMarkup() {
         <meta charset="utf-8" />
         <title>Links</title>
         <style>
+          :root {
+            color-scheme: light;
+          }
           body {
             margin: 0;
-            padding: 24px;
-            background: #091221;
-            color: #eaf4ff;
+            min-height: 100vh;
+            padding: 28px;
+            background:
+              radial-gradient(circle at top left, rgba(255,255,255,0.85), rgba(255,255,255,0) 38%),
+              linear-gradient(180deg, #fbfcfe 0%, #edf2f7 100%);
+            color: #172030;
             font-family: -apple-system, BlinkMacSystemFont, sans-serif;
           }
-          h1 { margin: 0 0 16px; font-size: 24px; }
+          h1 {
+            margin: 0 0 16px;
+            font-size: 24px;
+            letter-spacing: -0.03em;
+          }
           .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -646,15 +670,18 @@ function linksMarkup() {
           a {
             display: block;
             text-decoration: none;
-            color: inherit;
+            color: #172030;
             border-radius: 18px;
-            padding: 16px;
-            background: rgba(255,255,255,0.06);
-            border: 1px solid rgba(255,255,255,0.1);
+            padding: 18px;
+            background: rgba(255,255,255,0.72);
+            border: 1px solid rgba(173,184,201,0.24);
+            box-shadow:
+              0 14px 30px rgba(103,120,146,0.1),
+              inset 0 1px 0 rgba(255,255,255,0.92);
           }
           p {
             margin: 8px 0 0;
-            color: rgba(234,244,255,0.7);
+            color: #617086;
             line-height: 1.4;
           }
         </style>
