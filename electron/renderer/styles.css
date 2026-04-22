@@ -234,6 +234,10 @@ input {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.14));
 }
 
+.main.is-app-mode {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .toolbar {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) 220px;
@@ -241,6 +245,14 @@ input {
   gap: 12px;
   padding: 14px 18px;
   border-bottom: 1px solid rgba(147, 163, 184, 0.18);
+}
+
+.toolbar.is-app-mode {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.main.is-app-mode .toolbar {
+  display: none;
 }
 
 .window-actions,
@@ -324,6 +336,11 @@ input {
   gap: 4px;
 }
 
+.toolbar.is-app-mode .page-meta {
+  justify-self: end;
+  text-align: right;
+}
+
 #page-title {
   font-size: 13px;
   font-weight: 600;
@@ -349,6 +366,10 @@ input {
   box-shadow:
     0 18px 40px rgba(103, 120, 146, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+.main.is-app-mode .content-host {
+  margin: 16px;
 }
 
 .drag-region {

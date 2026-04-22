@@ -1,15 +1,30 @@
 const shell = window.loiterlyShell
 
-const state = {
-  activeApp: 'browser',
-  browser: {
+function createAppState(id, title, options = {}) {
+  return {
+    id,
+    title,
     url: '',
-    title: 'Loiterly Browser',
     canGoBack: false,
     canGoForward: false,
     isLoading: false,
+    showAddressBar: false,
+    showNavigation: false,
+    ...options,
+  }
+}
+
+const state = {
+  activeApp: 'browser',
+  apps: {
+    browser: createAppState('browser', 'Loiterly Browser', {
+      showAddressBar: true,
+      showNavigation: true,
+    }),
+    notion: createAppState('notion', 'Notion'),
+    links: createAppState('links', 'Links'),
   },
-  globalShortcut: 'CommandOrControl+Shift+Space',
+  globalShortcut: 'CommandOrControl+Shift+L',
 }
 
 const elements = {
@@ -17,6 +32,7 @@ const elements = {
   contentHost: document.getElementById('content-host'),
   addressForm: document.getElementById('address-form'),
   addressInput: document.getElementById('address-input'),
+  navControls: document.querySelector('.nav-controls'),
   pageTitle: document.getElementById('page-title'),
   pageStatus: document.getElementById('page-status'),
   goBack: document.getElementById('go-back'),
@@ -24,6 +40,8 @@ const elements = {
   reload: document.getElementById('reload'),
   hideWindow: document.getElementById('hide-window'),
   globalShortcut: document.getElementById('global-shortcut'),
+  main: document.querySelector('.main'),
+  toolbar: document.querySelector('.toolbar'),
 }
 
 function formatShortcut(shortcut) {
@@ -46,30 +64,41 @@ function formatShortcut(shortcut) {
 }
 
 function render() {
+  const currentApp = state.apps[state.activeApp] || createAppState(state.activeApp, state.activeApp)
+  const showBrowserControls = currentApp.showAddressBar || currentApp.showNavigation
+
   elements.tiles.forEach((tile) => {
     tile.classList.toggle('is-active', tile.dataset.app === state.activeApp)
   })
 
-  if (state.activeApp === 'browser') {
+  elements.main.classList.toggle('is-app-mode', !showBrowserControls)
+  elements.toolbar.classList.toggle('is-app-mode', !showBrowserControls)
+  elements.addressForm.hidden = !currentApp.showAddressBar
+  elements.navControls.hidden = !currentApp.showNavigation
+
+  if (currentApp.showAddressBar) {
     elements.addressInput.removeAttribute('disabled')
-    elements.goBack.disabled = !state.browser.canGoBack
-    elements.goForward.disabled = !state.browser.canGoForward
-    elements.reload.disabled = false
-    elements.addressInput.value = state.browser.url || elements.addressInput.value
+    elements.addressInput.value = currentApp.url || elements.addressInput.value
   } else {
     elements.addressInput.setAttribute('disabled', 'disabled')
-    elements.goBack.disabled = true
-    elements.goForward.disabled = true
-    elements.reload.disabled = true
   }
 
-  elements.pageTitle.textContent = state.activeApp === 'browser'
-    ? (state.browser.title || 'Loiterly Browser')
-    : state.activeApp[0].toUpperCase() + state.activeApp.slice(1)
+  elements.goBack.hidden = !currentApp.showNavigation
+  elements.goForward.hidden = !currentApp.showNavigation
+  elements.reload.hidden = !currentApp.showNavigation
+  elements.goBack.disabled = !currentApp.showNavigation || !currentApp.canGoBack
+  elements.goForward.disabled = !currentApp.showNavigation || !currentApp.canGoForward
+  elements.reload.disabled = !currentApp.showNavigation
 
-  elements.pageStatus.textContent = state.activeApp === 'browser'
-    ? (state.browser.isLoading ? 'Loading...' : 'Ready')
-    : 'Persistent view'
+  elements.pageTitle.textContent = currentApp.title || 'Loiterly'
+
+  if (currentApp.isLoading) {
+    elements.pageStatus.textContent = 'Loading...'
+  } else if (currentApp.showAddressBar) {
+    elements.pageStatus.textContent = 'Ready'
+  } else {
+    elements.pageStatus.textContent = 'Embedded app'
+  }
 
   elements.globalShortcut.replaceChildren(
     ...formatShortcut(state.globalShortcut).map((part) => {
@@ -92,10 +121,20 @@ function publishBounds() {
 }
 
 function setState(nextState) {
-  Object.assign(state, nextState)
-  if (nextState.browser) {
-    state.browser = { ...state.browser, ...nextState.browser }
+  if (nextState.activeApp) {
+    state.activeApp = nextState.activeApp
   }
+
+  if (nextState.apps) {
+    for (const [appId, appState] of Object.entries(nextState.apps)) {
+      state.apps[appId] = { ...(state.apps[appId] || createAppState(appId, appId)), ...appState }
+    }
+  }
+
+  if (nextState.globalShortcut) {
+    state.globalShortcut = nextState.globalShortcut
+  }
+
   render()
 }
 
