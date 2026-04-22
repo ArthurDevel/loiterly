@@ -59,14 +59,50 @@ let isQuitting = false
 let activeApp = 'browser'
 let contentBounds = { x: 120, y: 84, width: 980, height: 640 }
 let isCompanionEnabled = true
+let isCompanionSuppressedForTyping = false
 let companionInterval = null
 let companionPosition = null
+let lastCursorPoint = null
 
 const views = new Map()
 const visibleViews = new Set()
 const apps = new Map(APP_CONFIGS.map((appConfig) => [appConfig.id, appConfig]))
 const popupWindows = new Set()
 const configuredPermissionPartitions = new Set()
+
+function handleCompanionKeyboardActivity() {
+  if (isCompanionSuppressedForTyping) {
+    return
+  }
+
+  isCompanionSuppressedForTyping = true
+  syncCompanionVisibility()
+}
+
+function handleCompanionPointerActivity() {
+  if (!isCompanionSuppressedForTyping) {
+    return
+  }
+
+  isCompanionSuppressedForTyping = false
+  syncCompanionVisibility()
+}
+
+function attachCompanionInputTracking(contents) {
+  if (!contents || contents.isDestroyed()) {
+    return
+  }
+
+  contents.on('before-input-event', (_event, input) => {
+    if (input.type === 'keyDown') {
+      handleCompanionKeyboardActivity()
+    }
+  })
+
+  contents.on('before-mouse-event', () => {
+    handleCompanionPointerActivity()
+  })
+}
 
 function createShellWindow() {
   const window = new BrowserWindow({
@@ -93,6 +129,7 @@ function createShellWindow() {
     },
   })
 
+  attachCompanionInputTracking(window.webContents)
   window.loadFile(path.join(__dirname, 'renderer', 'index.html'))
   window.setWindowButtonVisibility(false)
   window.setAlwaysOnTop(true, 'floating')
@@ -151,6 +188,19 @@ function currentCursorDisplay() {
 
 function currentCursorWorkArea() {
   return currentCursorDisplay().workArea
+}
+
+function clampWindowOriginToArea(point, area) {
+  return {
+    x: Math.min(
+      Math.max(point.x, area.x + WINDOW_MARGIN),
+      area.x + area.width - WINDOW_WIDTH - WINDOW_MARGIN
+    ),
+    y: Math.min(
+      Math.max(point.y, area.y + WINDOW_MARGIN),
+      area.y + area.height - WINDOW_HEIGHT - WINDOW_MARGIN
+    ),
+  }
 }
 
 function createBackdropWindow() {
@@ -303,6 +353,7 @@ function createHostedAppView(appConfig) {
   const contents = view.webContents
   const browserSession = contents.session
 
+  attachCompanionInputTracking(contents)
   configureSessionPermissions(browserSession, appConfig)
 
   contents.setWindowOpenHandler(({ url }) => {
@@ -492,6 +543,7 @@ function popupWindowResponse(appConfig) {
     createWindow: (options) => {
       const popupWindow = new BrowserWindow(options)
       popupWindows.add(popupWindow)
+      attachCompanionInputTracking(popupWindow.webContents)
       popupWindow.setAlwaysOnTop(true, 'floating')
       popupWindow.setWindowButtonVisibility(true)
       centerPopupWindow(popupWindow)
@@ -581,11 +633,12 @@ function placeWindowGroupNearCursor() {
   }
 
   const cursor = screen.getCursorScreenPoint()
-  const workArea = currentCursorWorkArea()
-  const origin = clampWindowOrigin({
+  const cursorDisplay = screen.getDisplayNearestPoint(cursor)
+  const workArea = cursorDisplay.workArea
+  const origin = clampWindowOriginToArea({
     x: cursor.x + 24,
     y: cursor.y - WINDOW_HEIGHT + 32,
-  })
+  }, workArea)
 
   backdropWindow.setBounds({
     x: workArea.x,
@@ -611,6 +664,7 @@ function createLocalAppView(appConfig) {
     },
   })
 
+  attachCompanionInputTracking(view.webContents)
   const html = appConfig.id === 'links' ? linksMarkup() : ''
   view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
   view.webContents.on('page-title-updated', emitState)
@@ -791,18 +845,7 @@ function emitState() {
 
 function clampWindowOrigin(point) {
   const display = screen.getDisplayNearestPoint(point)
-  const area = display.workArea
-
-  return {
-    x: Math.min(
-      Math.max(point.x, area.x + WINDOW_MARGIN),
-      area.x + area.width - WINDOW_WIDTH - WINDOW_MARGIN
-    ),
-    y: Math.min(
-      Math.max(point.y, area.y + WINDOW_MARGIN),
-      area.y + area.height - WINDOW_HEIGHT - WINDOW_MARGIN
-    ),
-  }
+  return clampWindowOriginToArea(point, display.workArea)
 }
 
 function showWindow() {
@@ -822,6 +865,7 @@ function showWindow() {
   })
   ensureVisibleView(activeApp)
   emitState()
+  syncCompanionVisibility()
 }
 
 function hideWindow() {
@@ -833,6 +877,7 @@ function hideWindow() {
   mainWindow.hide()
   backdropWindow.hide()
   refreshTrayMenu()
+  syncCompanionVisibility()
 }
 
 function toggleWindowVisibility() {
@@ -845,6 +890,25 @@ function toggleWindowVisibility() {
   } else {
     showWindow()
   }
+}
+
+function isCompanionSuppressed() {
+  return isCompanionSuppressedForTyping || Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+}
+
+function syncCompanionVisibility() {
+  if (!companionWindow || companionWindow.isDestroyed()) {
+    return
+  }
+
+  if (!isCompanionEnabled || isCompanionSuppressed()) {
+    if (companionWindow.isVisible()) {
+      companionWindow.hide()
+    }
+    return
+  }
+
+  updateCompanionPosition()
 }
 
 function registerShortcuts() {
@@ -946,6 +1010,24 @@ function updateCompanionPosition() {
   }
 
   const cursor = screen.getCursorScreenPoint()
+
+  if (
+    isCompanionSuppressedForTyping &&
+    lastCursorPoint &&
+    (cursor.x !== lastCursorPoint.x || cursor.y !== lastCursorPoint.y)
+  ) {
+    isCompanionSuppressedForTyping = false
+  }
+
+  lastCursorPoint = { x: cursor.x, y: cursor.y }
+
+  if (isCompanionSuppressed()) {
+    if (companionWindow.isVisible()) {
+      companionWindow.hide()
+    }
+    return
+  }
+
   const target = {
     x: cursor.x + COMPANION_OFFSET.x,
     y: cursor.y + COMPANION_OFFSET.y,
@@ -987,7 +1069,7 @@ function showCompanion() {
 
   isCompanionEnabled = true
   startCompanionLoop()
-  updateCompanionPosition()
+  syncCompanionVisibility()
   refreshTrayMenu()
 }
 
@@ -1161,8 +1243,8 @@ app.whenReady().then(() => {
   createTray()
   registerShortcuts()
   setActiveApp(activeApp)
-  showCompanion()
   showWindow()
+  showCompanion()
 })
 
 app.on('will-quit', () => {
