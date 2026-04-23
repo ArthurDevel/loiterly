@@ -7,8 +7,8 @@ struct CompanionView: View {
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(red: 0.54, green: 0.73, blue: 1.0),
-                            Color(red: 0.29, green: 0.52, blue: 0.96),
+                            Color(red: 0.54, green: 0.73, blue: 1.0).opacity(0.8),
+                            Color(red: 0.29, green: 0.52, blue: 0.96).opacity(0.8),
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
