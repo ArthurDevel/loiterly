@@ -26,6 +26,7 @@ const COMPANION_SIZE = 24
 const COMPANION_OFFSET = { x: 10, y: -14 }
 const ACTIVE_SPACE_HOP_DELAY_MS = 140
 const CONDUCTOR_REFRESH_MS = 5000
+const CONTENT_VIEW_RADIUS = 23
 const SHARED_REMOTE_PARTITION = 'persist:loiterly-browser'
 const CONDUCTOR_DB_PATH = path.join(
   os.homedir(),
@@ -59,6 +60,24 @@ const APP_CONFIGS = [
     type: 'remote',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://github.com',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
+    id: 'instagram',
+    label: 'Instagram',
+    type: 'remote',
+    partition: SHARED_REMOTE_PARTITION,
+    initialURL: 'https://www.instagram.com',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
+    id: 'twitter',
+    label: 'Twitter',
+    type: 'remote',
+    partition: SHARED_REMOTE_PARTITION,
+    initialURL: 'https://x.com',
     showAddressBar: false,
     showNavigation: false,
   },
@@ -316,6 +335,16 @@ function refreshTrayMenu() {
     return
   }
 
+  const appLaunchItems = APP_CONFIGS
+    .filter((appConfig) => appConfig.id !== 'links')
+    .map((appConfig) => ({
+      label: `Open ${appConfig.label}`,
+      click: () => {
+        setActiveApp(appConfig.id)
+        showWindow()
+      },
+    }))
+
   const menu = Menu.buildFromTemplate([
     {
       label: mainWindow && mainWindow.isVisible() ? 'Hide Loiterly' : 'Show Loiterly',
@@ -329,34 +358,7 @@ function refreshTrayMenu() {
         toggleCompanion()
       },
     },
-    {
-      label: 'Open Browser',
-      click: () => {
-        setActiveApp('browser')
-        showWindow()
-      },
-    },
-    {
-      label: 'Open Notion',
-      click: () => {
-        setActiveApp('notion')
-        showWindow()
-      },
-    },
-    {
-      label: 'Open GitHub',
-      click: () => {
-        setActiveApp('github')
-        showWindow()
-      },
-    },
-    {
-      label: 'Open Conductor',
-      click: () => {
-        setActiveApp('conductor')
-        showWindow()
-      },
-    },
+    ...appLaunchItems,
     { type: 'separator' },
     {
       label: `Shortcut: ${GLOBAL_TOGGLE_SHORTCUT}`,
@@ -841,6 +843,7 @@ function layoutActiveView() {
 
   targetView.setBounds(contentBounds)
   try {
+    targetView.setBorderRadius(CONTENT_VIEW_RADIUS)
     targetView.setBackgroundColor('#00000000')
   } catch {
   }
@@ -1347,6 +1350,14 @@ function linksMarkup() {
           <a href="https://github.com">
             GitHub
             <p>Useful login/session test in the embedded Chromium view later.</p>
+          </a>
+          <a href="https://www.instagram.com">
+            Instagram
+            <p>Social app test target for login, popups, and persistent session state.</p>
+          </a>
+          <a href="https://x.com">
+            Twitter
+            <p>Timeline-heavy app target for another embedded social workflow.</p>
           </a>
           <a href="https://www.figma.com">
             Figma
