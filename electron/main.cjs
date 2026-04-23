@@ -98,6 +98,15 @@ const APP_CONFIGS = [
     showNavigation: false,
   },
   {
+    id: 'openpaperdigest',
+    label: 'Open Paper Digest',
+    type: 'remote',
+    partition: SHARED_REMOTE_PARTITION,
+    initialURL: 'https://www.openpaperdigest.com',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
     id: 'twitter',
     label: 'Twitter',
     type: 'remote',

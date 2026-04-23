@@ -27,6 +27,7 @@ const state = {
     'github-issues': createAppState('github-issues', 'Issues'),
     linkedin: createAppState('linkedin', 'LinkedIn'),
     instagram: createAppState('instagram', 'Instagram'),
+    openpaperdigest: createAppState('openpaperdigest', 'Open Paper Digest'),
     twitter: createAppState('twitter', 'Twitter'),
     links: createAppState('links', 'Links'),
     conductor: createAppState('conductor', 'Conductor'),
