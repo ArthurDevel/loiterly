@@ -31,7 +31,7 @@ const state = {
     twitter: createAppState('twitter', 'Twitter'),
     prompts: createAppState('prompts', 'Prompts'),
     links: createAppState('links', 'Links'),
-    conductor: createAppState('conductor', 'Conductor'),
+    conductor: createAppState('conductor', 'Agents'),
   },
   githubIssues: {
     owner: 'ArthurDevel',
