@@ -44,6 +44,12 @@ const CONDUCTOR_DB_PATH = path.join(
   'com.conductor.app',
   'conductor.db'
 )
+const CLAUDE_HOME_PATH = path.join(os.homedir(), '.claude')
+const CLAUDE_SESSIONS_PATH = path.join(CLAUDE_HOME_PATH, 'sessions')
+const CLAUDE_PROJECTS_PATH = path.join(CLAUDE_HOME_PATH, 'projects')
+const CLAUDE_TRANSCRIPT_TAIL_BYTES = 128 * 1024
+const GIT_METADATA_CACHE_TTL_MS = 15 * 1000
+const MAX_TRANSCRIPT_MESSAGES = 120
 const PROMPT_SOURCE_CONFIGS = [
   {
     id: 'codex-prompts',
@@ -161,7 +167,7 @@ const APP_CONFIGS = [
   },
   {
     id: 'conductor',
-    label: 'Conductor',
+    label: 'Agents',
     type: 'local',
     showAddressBar: false,
     showNavigation: false,
@@ -212,6 +218,8 @@ let githubIssuesReposState = {
   error: '',
 }
 let githubIssuesReposPromise = null
+const claudeTranscriptPathCache = new Map()
+const gitMetadataCache = new Map()
 
 function handleCompanionKeyboardActivity() {
   if (isCompanionSuppressedForTyping) {
@@ -1984,7 +1992,7 @@ function appState(appId, conductorSnapshot = null) {
 
     return {
       ...defaultAppState(appId),
-      title: 'Conductor',
+      title: 'Agents',
       activeCount: snapshot.activeAgents.length,
       unreadCount: snapshot.unreadAgents.length,
       hasAlert: snapshot.unreadAgents.length > 0,
@@ -3155,6 +3163,648 @@ function linksMarkup() {
   `
 }
 
+function loadClaudeCliSnapshot() {
+  if (!fs.existsSync(CLAUDE_SESSIONS_PATH)) {
+    return {
+      busyAgents: [],
+      waitingAgents: [],
+      errors: [],
+      signature: JSON.stringify([]),
+    }
+  }
+
+  const busyAgents = []
+  const waitingAgents = []
+  const errors = []
+
+  let entries = []
+  try {
+    entries = fs.readdirSync(CLAUDE_SESSIONS_PATH, { withFileTypes: true })
+  } catch (error) {
+    return {
+      busyAgents,
+      waitingAgents,
+      errors: [error instanceof Error ? error.message : String(error)],
+      signature: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+    }
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      continue
+    }
+
+    const sessionPath = path.join(CLAUDE_SESSIONS_PATH, entry.name)
+
+    try {
+      const sessionRecord = JSON.parse(fs.readFileSync(sessionPath, 'utf8'))
+      const processInfo = loadClaudeProcessInfo(sessionRecord.pid)
+      if (!processInfo) {
+        continue
+      }
+
+      const transcriptPath = findClaudeTranscriptPath(sessionRecord.sessionId)
+      const transcriptSummary = loadClaudeTranscriptSummary(transcriptPath)
+      const gitMetadata = resolveGitMetadata(sessionRecord.cwd)
+      const status = inferClaudeCliStatus(transcriptSummary)
+      const session = normalizeClaudeCliSession({
+        sessionRecord,
+        processInfo,
+        transcriptSummary,
+        gitMetadata,
+        status,
+      })
+
+      if (status === 'busy') {
+        busyAgents.push(session)
+      } else {
+        waitingAgents.push(session)
+      }
+    } catch (error) {
+      errors.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const sortNewestFirst = (left, right) => {
+    return sortTimestampDescending(left.updatedAtRaw, right.updatedAtRaw)
+  }
+
+  busyAgents.sort(sortNewestFirst)
+  waitingAgents.sort(sortNewestFirst)
+
+  return {
+    busyAgents,
+    waitingAgents,
+    errors,
+    signature: JSON.stringify([...busyAgents, ...waitingAgents]),
+  }
+}
+
+function loadClaudeProcessInfo(pid) {
+  const parsedPid = Number.parseInt(`${pid || ''}`, 10)
+  if (!Number.isInteger(parsedPid) || parsedPid < 1) {
+    return null
+  }
+
+  try {
+    const raw = execFileSync(
+      'ps',
+      ['-p', `${parsedPid}`, '-o', 'pid=,tty=,stat=,etime=,command='],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }
+    ).trim()
+
+    if (!raw) {
+      return null
+    }
+
+    const match = raw.match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([\s\S]+)$/)
+    if (!match) {
+      return null
+    }
+
+    const [, resolvedPid, tty, stat, elapsed, command] = match
+    const normalizedCommand = `${command || ''}`.trim()
+    if (!/\bclaude\b/i.test(normalizedCommand)) {
+      return null
+    }
+
+    return {
+      pid: Number.parseInt(resolvedPid, 10),
+      tty,
+      stat,
+      elapsed,
+      command: normalizedCommand,
+    }
+  } catch {
+    return null
+  }
+}
+
+function findClaudeTranscriptPath(sessionId) {
+  const normalizedSessionId = `${sessionId || ''}`.trim()
+  if (!normalizedSessionId) {
+    return ''
+  }
+
+  const cachedPath = claudeTranscriptPathCache.get(normalizedSessionId)
+  if (cachedPath && fs.existsSync(cachedPath)) {
+    return cachedPath
+  }
+
+  const directPath = path.join(CLAUDE_PROJECTS_PATH, `${normalizedSessionId}.jsonl`)
+  if (fs.existsSync(directPath)) {
+    claudeTranscriptPathCache.set(normalizedSessionId, directPath)
+    return directPath
+  }
+
+  if (!fs.existsSync(CLAUDE_PROJECTS_PATH)) {
+    return ''
+  }
+
+  try {
+    const rootEntries = fs.readdirSync(CLAUDE_PROJECTS_PATH, { withFileTypes: true })
+    for (const entry of rootEntries) {
+      if (!entry.isDirectory()) {
+        continue
+      }
+
+      const candidatePath = path.join(CLAUDE_PROJECTS_PATH, entry.name, `${normalizedSessionId}.jsonl`)
+      if (fs.existsSync(candidatePath)) {
+        claudeTranscriptPathCache.set(normalizedSessionId, candidatePath)
+        return candidatePath
+      }
+    }
+  } catch {
+    return ''
+  }
+
+  return ''
+}
+
+function loadClaudeTranscriptSummary(transcriptPath) {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return null
+  }
+
+  const tail = readUtf8Tail(transcriptPath, CLAUDE_TRANSCRIPT_TAIL_BYTES)
+  if (!tail) {
+    return null
+  }
+
+  const lines = tail.split('\n')
+  if (tail.length >= CLAUDE_TRANSCRIPT_TAIL_BYTES && lines.length > 0) {
+    lines.shift()
+  }
+
+  let lastActivityAt = ''
+  let lastMeaningfulEvent = null
+  let lastPromptSummary = ''
+  let model = ''
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index].trim()
+    if (!line) {
+      continue
+    }
+
+    let event = null
+    try {
+      event = JSON.parse(line)
+    } catch {
+      continue
+    }
+
+    if (!lastActivityAt && typeof event.timestamp === 'string') {
+      lastActivityAt = event.timestamp
+    }
+
+    if (!model && typeof event.message?.model === 'string') {
+      model = event.message.model
+    }
+
+    if (!lastPromptSummary) {
+      const promptSummary = extractClaudePromptSummary(event)
+      if (promptSummary) {
+        lastPromptSummary = promptSummary
+      }
+    }
+
+    if (!lastMeaningfulEvent) {
+      lastMeaningfulEvent = classifyClaudeMeaningfulEvent(event)
+    }
+
+    if (lastActivityAt && lastMeaningfulEvent && lastPromptSummary && model) {
+      break
+    }
+  }
+
+  return {
+    lastActivityAt,
+    lastMeaningfulEvent,
+    lastPromptSummary,
+    model,
+  }
+}
+
+function readUtf8Tail(filePath, maxBytes) {
+  const stats = fs.statSync(filePath)
+  if (stats.size < 1) {
+    return ''
+  }
+
+  const byteCount = Math.min(stats.size, maxBytes)
+  const buffer = Buffer.alloc(byteCount)
+  const fileDescriptor = fs.openSync(filePath, 'r')
+
+  try {
+    fs.readSync(fileDescriptor, buffer, 0, byteCount, stats.size - byteCount)
+    return buffer.toString('utf8')
+  } finally {
+    fs.closeSync(fileDescriptor)
+  }
+}
+
+function classifyClaudeMeaningfulEvent(event) {
+  if (!event || typeof event !== 'object') {
+    return null
+  }
+
+  if (event.type === 'assistant' && event.message?.role === 'assistant') {
+    return {
+      type: 'assistant',
+      stopReason: event.message?.stop_reason || '',
+    }
+  }
+
+  if (event.type === 'user' && event.message?.role === 'user') {
+    return {
+      type: 'user',
+      hasToolResult: hasClaudeToolResult(event.message?.content),
+    }
+  }
+
+  return null
+}
+
+function hasClaudeToolResult(content) {
+  if (!Array.isArray(content)) {
+    return false
+  }
+
+  return content.some((item) => item && typeof item === 'object' && item.type === 'tool_result')
+}
+
+function extractClaudePromptSummary(event) {
+  if (!event || typeof event !== 'object') {
+    return ''
+  }
+
+  if (event.type === 'last-prompt' && typeof event.lastPrompt === 'string') {
+    return summarizeClaudePrompt(event.lastPrompt)
+  }
+
+  if (event.type !== 'user' || event.message?.role !== 'user') {
+    return ''
+  }
+
+  const content = event.message?.content
+  if (Array.isArray(content) && content.some((item) => item && item.type === 'tool_result')) {
+    return ''
+  }
+
+  return summarizeClaudePrompt(extractClaudeTextContent(content))
+}
+
+function extractClaudeTextContent(content) {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (!Array.isArray(content)) {
+    return ''
+  }
+
+  return content
+    .filter((item) => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
+    .map((item) => item.text)
+    .join(' ')
+}
+
+function summarizeClaudePrompt(value) {
+  const normalized = `${value || ''}`.replace(/\s+/g, ' ').trim()
+  if (!normalized || normalized.startsWith('<') || normalized.startsWith('/')) {
+    return ''
+  }
+
+  if (normalized.length <= 72) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, 69)}...`
+}
+
+function inferClaudeCliStatus(transcriptSummary) {
+  const lastEvent = transcriptSummary?.lastMeaningfulEvent
+  if (!lastEvent) {
+    return 'waiting'
+  }
+
+  if (lastEvent.type === 'assistant' && lastEvent.stopReason === 'end_turn') {
+    return 'waiting'
+  }
+
+  return 'busy'
+}
+
+function normalizeClaudeCliSession({ sessionRecord, processInfo, transcriptSummary, gitMetadata, status }) {
+  const sessionId = `${sessionRecord.sessionId || ''}`.trim()
+  const promptSummary = transcriptSummary?.lastPromptSummary || ''
+  const updatedAtRaw = transcriptSummary?.lastActivityAt || ''
+  const startedAtRaw = sessionRecord.startedAt || ''
+  const cwd = `${sessionRecord.cwd || ''}`.trim()
+  const fallbackTitle = cwd ? path.basename(cwd) : `Claude CLI ${sessionId.slice(0, 8)}`
+
+  return {
+    source: 'Terminal Claude',
+    repo: gitMetadata.repo || 'Terminal Claude',
+    title: promptSummary || fallbackTitle,
+    workspace: cwd || 'Unknown working directory',
+    cwd,
+    branch: gitMetadata.branch || 'No branch detected',
+    agentType: 'claude-cli',
+    model: transcriptSummary?.model || 'unknown',
+    updatedAt: formatDisplayTimestamp(updatedAtRaw) || 'Unknown',
+    updatedAtRaw,
+    startedAt: formatDisplayTimestamp(startedAtRaw) || 'Unknown',
+    pid: processInfo.pid,
+    unreadCount: 0,
+    sessionId,
+    workspaceId: '',
+    tty: processInfo.tty,
+    status,
+    transcriptEntries: loadClaudeCliTranscriptEntries(findClaudeTranscriptPath(sessionId)),
+  }
+}
+
+function resolveGitMetadata(cwd) {
+  const normalizedCwd = `${cwd || ''}`.trim()
+  if (!normalizedCwd) {
+    return { repo: '', branch: '' }
+  }
+
+  const cached = gitMetadataCache.get(normalizedCwd)
+  if (cached && Date.now() - cached.cachedAt < GIT_METADATA_CACHE_TTL_MS) {
+    return cached.value
+  }
+
+  let value = {
+    repo: path.basename(normalizedCwd) || '',
+    branch: '',
+  }
+
+  try {
+    const repoRoot = execFileSync('git', ['-C', normalizedCwd, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const branch = execFileSync('git', ['-C', normalizedCwd, 'branch', '--show-current'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+
+    value = {
+      repo: path.basename(repoRoot) || value.repo,
+      branch: branch || 'Detached HEAD',
+    }
+  } catch {
+    value = {
+      repo: value.repo,
+      branch: '',
+    }
+  }
+
+  gitMetadataCache.set(normalizedCwd, {
+    cachedAt: Date.now(),
+    value,
+  })
+
+  return value
+}
+
+function formatDisplayTimestamp(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'medium',
+    })
+  }
+
+  const normalizedValue = `${value || ''}`.trim()
+  if (!normalizedValue) {
+    return ''
+  }
+
+  const date = new Date(normalizedValue)
+  if (Number.isNaN(date.getTime())) {
+    return normalizedValue
+  }
+
+  return date.toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  })
+}
+
+function sortTimestampDescending(left, right) {
+  const leftTimestamp = Date.parse(`${left || ''}`) || 0
+  const rightTimestamp = Date.parse(`${right || ''}`) || 0
+  return rightTimestamp - leftTimestamp
+}
+
+function loadClaudeCliTranscriptEntries(transcriptPath) {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return []
+  }
+
+  try {
+    const lines = fs.readFileSync(transcriptPath, 'utf8').split('\n')
+    const entries = []
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim()
+      if (!line) {
+        continue
+      }
+
+      let event = null
+      try {
+        event = JSON.parse(line)
+      } catch {
+        continue
+      }
+
+      const entry = normalizeClaudeTranscriptEvent(event)
+      if (entry) {
+        entries.push(entry)
+      }
+    }
+
+    return entries.slice(-MAX_TRANSCRIPT_MESSAGES)
+  } catch {
+    return []
+  }
+}
+
+function normalizeClaudeTranscriptEvent(event) {
+  if (!event || typeof event !== 'object') {
+    return null
+  }
+
+  if (event.type === 'assistant' && event.message?.role === 'assistant') {
+    const text = extractTranscriptText(event.message?.content)
+    if (!text) {
+      return null
+    }
+
+    return {
+      role: 'assistant',
+      text,
+      timestamp: event.timestamp || '',
+    }
+  }
+
+  if (event.type === 'user' && event.message?.role === 'user') {
+    if (hasClaudeToolResult(event.message?.content)) {
+      return null
+    }
+
+    const text = extractTranscriptText(event.message?.content)
+    if (!text) {
+      return null
+    }
+
+    return {
+      role: 'user',
+      text,
+      timestamp: event.timestamp || '',
+    }
+  }
+
+  return null
+}
+
+function loadConductorTranscriptEntries(sessionId) {
+  const normalizedSessionId = `${sessionId || ''}`.trim()
+  if (!normalizedSessionId) {
+    return []
+  }
+
+  const escapedSessionId = normalizedSessionId.replaceAll("'", "''")
+  const sql = `
+    SELECT COALESCE(
+      json_group_array(
+        json_object(
+          'role', role,
+          'content', content,
+          'createdAt', created_at
+        )
+      ),
+      '[]'
+    )
+    FROM (
+      SELECT role, content, created_at
+      FROM session_messages
+      WHERE session_id = '${escapedSessionId}'
+      ORDER BY datetime(created_at) DESC
+      LIMIT ${MAX_TRANSCRIPT_MESSAGES * 3}
+    );
+  `
+
+  try {
+    const raw = execFileSync('sqlite3', [CONDUCTOR_DB_PATH, sql], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+
+    const rows = raw ? JSON.parse(raw) : []
+    const normalizedRows = Array.isArray(rows) ? rows.reverse() : []
+    const entries = normalizedRows
+      .map((row) => normalizeConductorTranscriptRow(row))
+      .filter(Boolean)
+
+    return entries.slice(-MAX_TRANSCRIPT_MESSAGES)
+  } catch {
+    return []
+  }
+}
+
+function normalizeConductorTranscriptRow(row) {
+  if (!row || typeof row !== 'object') {
+    return null
+  }
+
+  const parsedContent = parseJsonSafely(row.content)
+  if (parsedContent?.message?.role) {
+    if (hasClaudeToolResult(parsedContent.message.content)) {
+      return null
+    }
+
+    const text = extractTranscriptText(parsedContent.message.content)
+    if (!text) {
+      return null
+    }
+
+    return {
+      role: parsedContent.message.role,
+      text,
+      timestamp: parsedContent.timestamp || row.createdAt || '',
+    }
+  }
+
+  const role = `${row.role || ''}`.trim()
+  const text = `${row.content || ''}`.trim()
+  if (!text || !['user', 'assistant'].includes(role)) {
+    return null
+  }
+
+  return {
+    role,
+    text,
+    timestamp: row.createdAt || '',
+  }
+}
+
+function parseJsonSafely(value) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const normalized = value.trim()
+  if (!normalized.startsWith('{') && !normalized.startsWith('[')) {
+    return null
+  }
+
+  try {
+    return JSON.parse(normalized)
+  } catch {
+    return null
+  }
+}
+
+function extractTranscriptText(content) {
+  if (typeof content === 'string') {
+    return content.trim()
+  }
+
+  if (!Array.isArray(content)) {
+    return ''
+  }
+
+  const parts = content
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return ''
+      }
+
+      if (item.type === 'text' && typeof item.text === 'string') {
+        return item.text
+      }
+
+      if (typeof item.content === 'string' && item.type !== 'tool_result' && item.type !== 'tool_use') {
+        return item.content
+      }
+
+      return ''
+    })
+    .filter(Boolean)
+
+  return parts.join('\n\n').trim()
+}
+
 function loadConductorSnapshot() {
   const sql = `
     SELECT COALESCE(
@@ -3201,6 +3851,8 @@ function loadConductorSnapshot() {
     );
   `
 
+  const claudeCliSnapshot = loadClaudeCliSnapshot()
+
   try {
     const raw = execFileSync('sqlite3', [CONDUCTOR_DB_PATH, sql], {
       encoding: 'utf8',
@@ -3209,29 +3861,57 @@ function loadConductorSnapshot() {
 
     const sessions = raw ? JSON.parse(raw) : []
     const normalizedSessions = Array.isArray(sessions) ? sessions : []
+    const sessionsWithTranscripts = normalizedSessions.map((session) => ({
+      ...session,
+      transcriptEntries: loadConductorTranscriptEntries(session.sessionId),
+    }))
 
     return {
-      activeAgents: normalizedSessions.filter((session) => session.status === 'working'),
-      idleAgents: normalizedSessions.filter((session) => session.status === 'idle'),
-      unreadAgents: normalizedSessions.filter((session) => Number(session.unreadCount || 0) > 0),
+      activeAgents: sessionsWithTranscripts.filter((session) => session.status === 'working'),
+      idleAgents: sessionsWithTranscripts.filter((session) => session.status === 'idle'),
+      terminalBusyAgents: claudeCliSnapshot.busyAgents,
+      terminalWaitingAgents: claudeCliSnapshot.waitingAgents,
+      unreadAgents: sessionsWithTranscripts.filter((session) => Number(session.unreadCount || 0) > 0),
       dbPath: CONDUCTOR_DB_PATH,
+      claudeSessionsPath: CLAUDE_SESSIONS_PATH,
       refreshedAt: new Date().toISOString(),
-      signature: JSON.stringify(normalizedSessions),
+      errors: claudeCliSnapshot.errors,
+      signature: JSON.stringify({
+        conductor: sessionsWithTranscripts,
+        claudeCli: [...claudeCliSnapshot.busyAgents, ...claudeCliSnapshot.waitingAgents],
+      }),
     }
   } catch (error) {
+    const conductorError = error instanceof Error ? error.message : String(error)
     return {
       activeAgents: [],
       idleAgents: [],
+      terminalBusyAgents: claudeCliSnapshot.busyAgents,
+      terminalWaitingAgents: claudeCliSnapshot.waitingAgents,
       unreadAgents: [],
       dbPath: CONDUCTOR_DB_PATH,
+      claudeSessionsPath: CLAUDE_SESSIONS_PATH,
       refreshedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : String(error),
-      signature: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+      errors: [conductorError, ...claudeCliSnapshot.errors],
+      signature: JSON.stringify({
+        error: conductorError,
+        claudeCli: [...claudeCliSnapshot.busyAgents, ...claudeCliSnapshot.waitingAgents],
+      }),
     }
   }
 }
 
-function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refreshedAt, error }) {
+function conductorMarkup({
+  activeAgents,
+  idleAgents,
+  terminalBusyAgents,
+  terminalWaitingAgents,
+  unreadAgents,
+  dbPath,
+  claudeSessionsPath,
+  refreshedAt,
+  errors = [],
+}) {
   const refreshedLabel = escapeHtml(
     new Date(refreshedAt).toLocaleString(undefined, {
       dateStyle: 'medium',
@@ -3239,30 +3919,32 @@ function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refre
     })
   )
 
-  const sections = [
-    sessionSectionMarkup({
-      title: 'Active',
-      description: 'Sessions currently running in Conductor.',
-      sessions: activeAgents,
-      pillClassName: 'status-pill',
-      pillLabel: 'Working',
-      emptyTitle: 'No active agents',
-      emptyCopy: 'Conductor currently has no sessions with a <code>working</code> status.',
-    }),
-    sessionSectionMarkup({
-      title: 'Needs Input',
-      description: 'Idle sessions that are waiting on the user.',
-      sessions: idleAgents,
-      pillClassName: 'status-pill status-pill--alert',
-      pillLabel: 'Idle',
-      emptyTitle: 'No idle agents',
-      emptyCopy: 'No ready Conductor workspaces are currently idle.',
-    }),
-  ].join('')
+  const combinedSessions = buildCombinedSessionRows({
+    activeAgents,
+    idleAgents,
+    terminalBusyAgents,
+    terminalWaitingAgents,
+  })
 
-  const errorBanner = error
-    ? `<div class="error-banner">Could not read Conductor state: ${escapeHtml(error)}</div>`
+  const errorBanner = errors.length
+    ? `
+      <div class="error-banner">
+        ${errors.map((message) => `<div>${escapeHtml(message)}</div>`).join('')}
+      </div>
+    `
     : ''
+
+  const sessionRecords = combinedSessions.map((session) => ({
+    key: session.modalKey,
+    title: session.title,
+    source: session.source,
+    statusLabel: session.statusLabel,
+    repo: session.repo,
+    workspace: session.workspace,
+    branch: session.branch,
+    updatedAt: session.updatedAt,
+    transcriptEntries: session.transcriptEntries || [],
+  }))
 
   return `
     <!doctype html>
@@ -3270,7 +3952,7 @@ function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refre
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Conductor</title>
+        <title>Agents</title>
         <style>
           :root {
             color-scheme: light;
@@ -3322,22 +4004,6 @@ function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refre
             display: grid;
             gap: 24px;
           }
-          .section-heading {
-            display: flex;
-            align-items: end;
-            justify-content: space-between;
-            gap: 16px;
-            margin-bottom: 12px;
-          }
-          .section-heading h2 {
-            margin: 0;
-            font-size: 20px;
-            letter-spacing: -0.03em;
-          }
-          .section-heading p {
-            margin: 4px 0 0;
-            color: var(--muted);
-          }
           .meta {
             text-align: right;
             color: var(--muted);
@@ -3371,12 +4037,7 @@ function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refre
             border: 1px solid rgba(178, 73, 73, 0.18);
           }
           .agent-list {
-            display: grid;
-            gap: 16px;
-          }
-          .agent-card,
-          .empty-state {
-            padding: 18px 20px;
+            overflow: hidden;
             border-radius: 22px;
             background: linear-gradient(180deg, var(--panel-strong), var(--panel));
             border: 1px solid var(--border);
@@ -3384,21 +4045,54 @@ function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refre
               0 16px 36px rgba(103, 120, 146, 0.08),
               inset 0 1px 0 rgba(255,255,255,0.84);
           }
-          .agent-card__top {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 16px;
-            margin-bottom: 16px;
+          .table-shell {
+            overflow-x: auto;
           }
-          .agent-card__repo {
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          thead th {
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 11px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--muted);
+            background: rgba(255, 255, 255, 0.55);
+            border-bottom: 1px solid var(--border);
+          }
+          tbody td {
+            padding: 12px 16px;
+            vertical-align: top;
+            border-bottom: 1px solid rgba(147, 163, 184, 0.16);
+          }
+          tbody tr:last-child td {
+            border-bottom: 0;
+          }
+          tbody tr:hover td {
+            background: rgba(255, 255, 255, 0.34);
+          }
+          tbody tr[data-session-key] {
+            cursor: pointer;
+          }
+          .table-title {
+            font-weight: 600;
+            letter-spacing: -0.01em;
+          }
+          .table-meta {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.4;
+          }
+          .table-repo {
             color: var(--accent);
             font-size: 12px;
             font-weight: 700;
             letter-spacing: 0.06em;
             text-transform: uppercase;
           }
-          .agent-card h2,
           .empty-state h2 {
             margin: 6px 0 0;
             font-size: 21px;
@@ -3420,30 +4114,112 @@ function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refre
             background: var(--alert-soft);
             color: var(--alert);
           }
-          .agent-grid {
+          .status-pill--unread {
+            background: var(--accent-soft);
+            color: var(--accent);
+          }
+          .status-pill--idle {
+            background: rgba(97, 112, 134, 0.14);
+            color: var(--muted);
+          }
+          .source-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid rgba(147, 163, 184, 0.24);
+            font-size: 12px;
+            font-weight: 600;
+          }
+          .empty-state p {
+            margin: 8px 0 0;
+            color: var(--muted);
+          }
+          .modal {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(17, 24, 39, 0.32);
+            backdrop-filter: blur(10px);
+          }
+          .modal[hidden] {
+            display: none;
+          }
+          .modal__panel {
+            width: min(900px, 100%);
+            max-height: min(80vh, 900px);
+            overflow: hidden;
+            border-radius: 24px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(247,250,252,0.94));
+            border: 1px solid rgba(147, 163, 184, 0.24);
+            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+          }
+          .modal__header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 20px 22px 16px;
+            border-bottom: 1px solid rgba(147, 163, 184, 0.18);
+          }
+          .modal__title {
             margin: 0;
+            font-size: 24px;
+            letter-spacing: -0.03em;
+          }
+          .modal__meta {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.5;
+          }
+          .modal__close {
+            border: 0;
+            background: rgba(23, 32, 48, 0.06);
+            color: var(--text);
+            border-radius: 999px;
+            width: 36px;
+            height: 36px;
+            font-size: 18px;
+            cursor: pointer;
+          }
+          .transcript {
+            padding: 18px 22px 22px;
+            max-height: calc(min(80vh, 900px) - 96px);
+            overflow-y: auto;
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 14px;
           }
-          .agent-grid div {
-            min-width: 0;
+          .message {
+            padding: 14px 16px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.74);
+            border: 1px solid rgba(147, 163, 184, 0.16);
           }
-          dt {
-            margin: 0 0 6px;
+          .message--user {
+            background: rgba(46, 104, 219, 0.08);
+            border-color: rgba(46, 104, 219, 0.12);
+          }
+          .message__meta {
+            margin-bottom: 8px;
             color: var(--muted);
             font-size: 11px;
             font-weight: 700;
             letter-spacing: 0.08em;
             text-transform: uppercase;
           }
-          dd {
-            margin: 0;
-            line-height: 1.45;
-            word-break: break-word;
+          .message__body {
+            white-space: pre-wrap;
+            line-height: 1.55;
           }
-          .empty-state p {
-            margin: 8px 0 0;
+          .transcript-empty {
+            padding: 18px;
+            border-radius: 18px;
+            background: rgba(255,255,255,0.66);
             color: var(--muted);
           }
           code {
@@ -3455,105 +4231,252 @@ function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refre
       <body>
         <header>
           <div>
-            <h1>Conductor</h1>
+            <h1>Agents</h1>
             <p class="subtitle">
-              This view reads Conductor's local SQLite state, shows active sessions, and lists idle sessions that are waiting on the user.
+              This view reads Conductor's local SQLite state and Claude CLI session logs in one compact session table.
             </p>
           </div>
           <div class="meta">
             Last refreshed<br />
             <strong>${refreshedLabel}</strong>
             <code>${escapeHtml(dbPath)}</code>
+            <code>${escapeHtml(claudeSessionsPath)}</code>
           </div>
         </header>
-        <div class="summary">${activeAgents.length} active · ${idleAgents.length} idle · ${unreadAgents.length} unread</div>
+        <div class="summary">
+          ${combinedSessions.filter((session) => session.statusOrder === 0).length} unread ·
+          ${combinedSessions.filter((session) => session.statusOrder === 1).length} need input ·
+          ${combinedSessions.filter((session) => session.statusOrder === 2).length} running ·
+          ${combinedSessions.filter((session) => session.statusOrder === 3).length} idle ·
+          ${unreadAgents.length} unread
+        </div>
         ${errorBanner}
-        <section class="sections">${sections}</section>
+        ${sessionsTableMarkup(combinedSessions)}
+        <div id="session-modal" class="modal" hidden>
+          <div class="modal__panel">
+            <div class="modal__header">
+              <div>
+                <h2 id="session-modal-title" class="modal__title">Session</h2>
+                <div id="session-modal-meta" class="modal__meta"></div>
+              </div>
+              <button id="session-modal-close" class="modal__close" type="button" aria-label="Close">×</button>
+            </div>
+            <div id="session-transcript" class="transcript"></div>
+          </div>
+        </div>
+        <script>
+          const sessionRecords = ${serializeForInlineScript(sessionRecords)}
+          const sessionRecordMap = new Map(sessionRecords.map((session) => [session.key, session]))
+          const sessionModal = document.getElementById('session-modal')
+          const sessionModalTitle = document.getElementById('session-modal-title')
+          const sessionModalMeta = document.getElementById('session-modal-meta')
+          const sessionTranscript = document.getElementById('session-transcript')
+          const sessionModalClose = document.getElementById('session-modal-close')
+
+          function escapeMarkup(value) {
+            return \`\${value ?? ''}\`
+              .replaceAll('&', '&amp;')
+              .replaceAll('<', '&lt;')
+              .replaceAll('>', '&gt;')
+              .replaceAll('"', '&quot;')
+              .replaceAll(\"'\", '&#39;')
+          }
+
+          function renderTranscript(entries) {
+            if (!entries.length) {
+              sessionTranscript.innerHTML = '<div class="transcript-empty">No conversation history is available for this session.</div>'
+              return
+            }
+
+            sessionTranscript.innerHTML = entries.map((entry) => {
+              const role = entry.role === 'user' ? 'User' : 'Assistant'
+              const className = entry.role === 'user' ? 'message message--user' : 'message'
+              return \`
+                <article class="\${className}">
+                  <div class="message__meta">\${escapeMarkup(role)} · \${escapeMarkup(entry.timestamp || 'Unknown')}</div>
+                  <div class="message__body">\${escapeMarkup(entry.text || '')}</div>
+                </article>
+              \`
+            }).join('')
+          }
+
+          function scrollTranscriptToBottom() {
+            requestAnimationFrame(() => {
+              sessionTranscript.scrollTop = sessionTranscript.scrollHeight
+            })
+          }
+
+          function openSessionModal(sessionKey) {
+            const session = sessionRecordMap.get(sessionKey)
+            if (!session) {
+              return
+            }
+
+            sessionModalTitle.textContent = session.title || 'Session'
+            sessionModalMeta.textContent = [session.source, session.statusLabel, session.repo, session.branch, session.updatedAt]
+              .filter(Boolean)
+              .join(' · ')
+            renderTranscript(session.transcriptEntries || [])
+            sessionModal.hidden = false
+            scrollTranscriptToBottom()
+          }
+
+          function closeSessionModal() {
+            sessionModal.hidden = true
+          }
+
+          document.querySelectorAll('tr[data-session-key]').forEach((row) => {
+            row.addEventListener('click', () => openSessionModal(row.dataset.sessionKey))
+          })
+
+          sessionModalClose.addEventListener('click', closeSessionModal)
+          sessionModal.addEventListener('click', (event) => {
+            if (event.target === sessionModal) {
+              closeSessionModal()
+            }
+          })
+          document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !sessionModal.hidden) {
+              closeSessionModal()
+            }
+          })
+        </script>
       </body>
     </html>
   `
 }
 
-function sessionSectionMarkup({
-  title,
-  description,
-  sessions,
-  pillClassName,
-  pillLabel,
-  emptyTitle,
-  emptyCopy,
+function buildCombinedSessionRows({
+  activeAgents,
+  idleAgents,
+  terminalBusyAgents,
+  terminalWaitingAgents,
 }) {
-  const cards = sessions.length
-    ? sessions.map((session) => {
-      const repo = escapeHtml(session.repo || 'Unknown repo')
-      const workspace = escapeHtml(session.workspace || 'Unknown workspace')
-      const branch = escapeHtml(session.branch || 'No branch recorded')
-      const sessionTitle = escapeHtml(session.title || 'Untitled session')
-      const model = escapeHtml(session.model || 'unknown')
-      const agentType = escapeHtml(session.agentType || 'unknown')
-      const updatedAt = escapeHtml(session.updatedAt || 'unknown')
-      const unreadCount = escapeHtml(session.unreadCount || 0)
-      const workspaceId = escapeHtml(session.workspaceId || '')
-      const sessionId = escapeHtml(session.sessionId || '')
+  const rows = []
 
-      return `
-        <article class="agent-card">
-          <div class="agent-card__top">
-            <div>
-              <div class="agent-card__repo">${repo}</div>
-              <h2>${sessionTitle}</h2>
-            </div>
-            <span class="${pillClassName}">${pillLabel}</span>
-          </div>
-          <dl class="agent-grid">
-            <div>
-              <dt>Workspace</dt>
-              <dd>${workspace}</dd>
-            </div>
-            <div>
-              <dt>Branch</dt>
-              <dd>${branch}</dd>
-            </div>
-            <div>
-              <dt>Agent</dt>
-              <dd>${agentType}</dd>
-            </div>
-            <div>
-              <dt>Model</dt>
-              <dd>${model}</dd>
-            </div>
-            <div>
-              <dt>Updated</dt>
-              <dd>${updatedAt}</dd>
-            </div>
-            <div>
-              <dt>Unread</dt>
-              <dd>${unreadCount}</dd>
-            </div>
-            <div>
-              <dt>IDs</dt>
-              <dd>${workspaceId}<br />${sessionId}</dd>
-            </div>
-          </dl>
-        </article>
-      `
-    }).join('')
-    : `
-      <div class="empty-state">
-        <h2>${emptyTitle}</h2>
-        <p>${emptyCopy}</p>
+  const pushRows = (sessions, source, statusKey) => {
+    for (const session of sessions) {
+      const resolvedStatusKey = Number(session.unreadCount || 0) > 0 ? 'unread' : statusKey
+      rows.push(normalizeCombinedSessionRow(session, source, resolvedStatusKey))
+    }
+  }
+
+  pushRows(idleAgents, 'Conductor', 'needs_input')
+  pushRows(terminalWaitingAgents, 'Terminal', 'needs_input')
+  pushRows(activeAgents, 'Conductor', 'running')
+  pushRows(terminalBusyAgents, 'Terminal', 'running')
+
+  rows.sort((left, right) => {
+    if (left.statusOrder !== right.statusOrder) {
+      return left.statusOrder - right.statusOrder
+    }
+
+    return sortTimestampDescending(left.updatedAtRaw, right.updatedAtRaw)
+  })
+
+  return rows
+}
+
+function normalizeCombinedSessionRow(session, source, statusKey) {
+  const statusMeta = combinedStatusMeta(statusKey)
+  return {
+    ...session,
+    modalKey: `${source.toLowerCase()}:${session.sessionId || session.workspaceId || session.title || 'session'}`,
+    source,
+    statusLabel: statusMeta.label,
+    statusClassName: statusMeta.className,
+    statusOrder: statusMeta.order,
+  }
+}
+
+function combinedStatusMeta(statusKey) {
+  if (statusKey === 'unread') {
+    return {
+      label: 'Unread',
+      className: 'status-pill status-pill--unread',
+      order: 0,
+    }
+  }
+
+  if (statusKey === 'needs_input') {
+    return {
+      label: 'Needs Input',
+      className: 'status-pill status-pill--alert',
+      order: 1,
+    }
+  }
+
+  if (statusKey === 'running') {
+    return {
+      label: 'Running',
+      className: 'status-pill',
+      order: 2,
+    }
+  }
+
+  return {
+    label: 'Idle',
+    className: 'status-pill status-pill--idle',
+    order: 3,
+  }
+}
+
+function sessionsTableMarkup(sessions) {
+  if (!sessions.length) {
+    return `
+      <div class="empty-state agent-list">
+        <h2>No sessions</h2>
+        <p>No Conductor or terminal Claude sessions are currently visible.</p>
       </div>
     `
+  }
+
+  const rows = sessions.map((session) => {
+    const title = escapeHtml(session.title || 'Untitled session')
+    const repo = escapeHtml(session.repo || 'Unknown repo')
+    const workspace = escapeHtml(session.workspace || session.cwd || 'Unknown workspace')
+    const branch = escapeHtml(session.branch || 'No branch')
+    const updatedAt = escapeHtml(session.updatedAt || 'Unknown')
+    const metaParts = [
+      session.model ? escapeHtml(session.model) : '',
+      session.pid ? `PID ${escapeHtml(session.pid)}` : '',
+      session.sessionId ? escapeHtml(session.sessionId.slice(0, 8)) : '',
+    ].filter(Boolean)
+
+    return `
+      <tr data-session-key="${escapeHtml(session.modalKey)}">
+        <td><span class="${session.statusClassName}">${escapeHtml(session.statusLabel)}</span></td>
+        <td><span class="source-badge">${escapeHtml(session.source)}</span></td>
+        <td>
+          <div class="table-title">${title}</div>
+          <div class="table-meta">${metaParts.join(' · ')}</div>
+        </td>
+        <td><div class="table-repo">${repo}</div></td>
+        <td>${workspace}</td>
+        <td>${branch}</td>
+        <td>${updatedAt}</td>
+      </tr>
+    `
+  }).join('')
 
   return `
-    <section>
-      <div class="section-heading">
-        <div>
-          <h2>${escapeHtml(title)}</h2>
-          <p>${escapeHtml(description)}</p>
-        </div>
+    <section class="agent-list">
+      <div class="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Source</th>
+              <th>Session</th>
+              <th>Repo</th>
+              <th>Workspace</th>
+              <th>Branch</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
       </div>
-      <div class="agent-list">${cards}</div>
     </section>
   `
 }
