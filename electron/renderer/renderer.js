@@ -25,14 +25,19 @@ const state = {
     notion: createAppState('notion', 'Notion'),
     github: createAppState('github', 'GitHub'),
     linkedin: createAppState('linkedin', 'LinkedIn'),
+    instagram: createAppState('instagram', 'Instagram'),
+    twitter: createAppState('twitter', 'Twitter'),
     links: createAppState('links', 'Links'),
+    conductor: createAppState('conductor', 'Conductor'),
   },
   globalShortcut: 'CommandOrControl+Shift+L',
 }
 
 const elements = {
   tiles: Array.from(document.querySelectorAll('.tile')),
+  tileBadges: Array.from(document.querySelectorAll('.tile-badge')),
   contentHost: document.getElementById('content-host'),
+  contentStage: document.getElementById('content-stage'),
   addressForm: document.getElementById('address-form'),
   addressInput: document.getElementById('address-input'),
   navControls: document.querySelector('.nav-controls'),
@@ -71,24 +76,20 @@ function render() {
   const showBrowserControls = currentApp.showAddressBar || currentApp.showNavigation
 
   elements.tiles.forEach((tile) => {
-    const appState = state.apps[tile.dataset.app] || createAppState(tile.dataset.app, tile.dataset.app)
-    const unreadCount = Number.isFinite(appState.unreadCount) ? Math.max(0, Math.trunc(appState.unreadCount)) : 0
     tile.classList.toggle('is-active', tile.dataset.app === state.activeApp)
-    tile.classList.toggle('has-badge', unreadCount > 0)
+  })
 
-    let badge = tile.querySelector('.tile-badge')
-    if (unreadCount > 0) {
-      if (!badge) {
-        badge = document.createElement('span')
-        badge.className = 'tile-badge'
-        tile.appendChild(badge)
-      }
-
-      badge.textContent = unreadCount > 99 ? '99+' : `${unreadCount}`
-      badge.setAttribute('aria-label', `${unreadCount} unread messages`)
-    } else if (badge) {
-      badge.remove()
+  elements.tileBadges.forEach((badge) => {
+    const appId = badge.dataset.badgeFor
+    const badgeCount = state.apps[appId]?.unreadCount || 0
+    if (badgeCount < 1) {
+      badge.hidden = true
+      badge.textContent = ''
+      return
     }
+
+    badge.hidden = false
+    badge.textContent = badgeCount > 9 ? '9+' : `${badgeCount}`
   })
 
   elements.main.classList.toggle('is-app-mode', !showBrowserControls)
@@ -131,7 +132,7 @@ function render() {
 }
 
 function publishBounds() {
-  const rect = elements.contentHost.getBoundingClientRect()
+  const rect = elements.contentStage.getBoundingClientRect()
   shell.setContentBounds({
     x: Math.round(rect.x),
     y: Math.round(rect.y),
