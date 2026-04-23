@@ -26,12 +26,14 @@ const state = {
     instagram: createAppState('instagram', 'Instagram'),
     twitter: createAppState('twitter', 'Twitter'),
     links: createAppState('links', 'Links'),
+    conductor: createAppState('conductor', 'Conductor'),
   },
   globalShortcut: 'CommandOrControl+Shift+L',
 }
 
 const elements = {
   tiles: Array.from(document.querySelectorAll('.tile')),
+  tileBadges: Array.from(document.querySelectorAll('.tile-badge')),
   contentHost: document.getElementById('content-host'),
   contentStage: document.getElementById('content-stage'),
   addressForm: document.getElementById('address-form'),
@@ -73,6 +75,19 @@ function render() {
 
   elements.tiles.forEach((tile) => {
     tile.classList.toggle('is-active', tile.dataset.app === state.activeApp)
+  })
+
+  elements.tileBadges.forEach((badge) => {
+    const appId = badge.dataset.badgeFor
+    const badgeCount = state.apps[appId]?.unreadCount || 0
+    if (badgeCount < 1) {
+      badge.hidden = true
+      badge.textContent = ''
+      return
+    }
+
+    badge.hidden = false
+    badge.textContent = badgeCount > 9 ? '9+' : `${badgeCount}`
   })
 
   elements.main.classList.toggle('is-app-mode', !showBrowserControls)
