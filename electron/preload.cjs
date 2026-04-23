@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('loiterlyShell', {
   setActiveApp: (appId) => ipcRenderer.send('shell:set-active-app', appId),
   setContentBounds: (bounds) => ipcRenderer.send('shell:set-content-bounds', bounds),
   navigate: (value) => ipcRenderer.send('shell:navigate', value),
+  openAppURL: (appId, url) => ipcRenderer.send('shell:open-app-url', appId, url),
   goBack: () => ipcRenderer.send('shell:go-back'),
   goForward: () => ipcRenderer.send('shell:go-forward'),
   reload: () => ipcRenderer.send('shell:reload'),

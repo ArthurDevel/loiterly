@@ -30,6 +30,10 @@
             <span class="tile-icon">G</span>
             <span>GitHub</span>
           </button>
+          <button class="tile" data-app="github-issues">
+            <span class="tile-icon">#</span>
+            <span>Issues</span>
+          </button>
           <button class="tile" data-app="linkedin">
             <span class="tile-icon">in</span>
             <span>LinkedIn</span>
@@ -90,6 +94,14 @@
             <div id="page-status">Ready</div>
           </div>
         </header>
+
+        <section id="issues-shortcuts" class="issues-shortcuts no-drag" hidden>
+          <div class="issues-shortcuts__meta">
+            <p class="issues-shortcuts__eyebrow">ArthurDevel</p>
+            <div id="issues-shortcuts-status" class="issues-shortcuts__status">Repositories</div>
+          </div>
+          <div id="issues-shortcuts-list" class="issues-shortcuts__list"></div>
+        </section>
 
         <section id="content-host" class="content-host">
           <div id="content-stage" class="content-stage" aria-hidden="true"></div>

@@ -32,6 +32,9 @@ const CONTENT_VIEW_RADIUS = 23
 const SHARED_REMOTE_PARTITION = 'persist:loiterly-browser'
 const GITHUB_RELEASES_URL = 'https://github.com/ArthurDevel/loiterly/releases'
 const GITHUB_LATEST_RELEASE_API_URL = 'https://api.github.com/repos/ArthurDevel/loiterly/releases/latest'
+const GITHUB_ISSUES_OWNER = 'ArthurDevel'
+const GITHUB_ISSUES_DEFAULT_REPO = 'openpoke'
+const GITHUB_ISSUES_REPOS_URL = `https://github.com/${GITHUB_ISSUES_OWNER}?tab=repositories`
 const CONDUCTOR_DB_PATH = path.join(
   os.homedir(),
   'Library',
@@ -64,6 +67,15 @@ const APP_CONFIGS = [
     type: 'remote',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://github.com',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
+    id: 'github-issues',
+    label: 'Issues',
+    type: 'remote',
+    partition: SHARED_REMOTE_PARTITION,
+    initialURL: `https://github.com/${GITHUB_ISSUES_OWNER}/${GITHUB_ISSUES_DEFAULT_REPO}/issues`,
     showAddressBar: false,
     showNavigation: false,
   },
@@ -142,10 +154,18 @@ const hostedAppUnreadCounts = new Map()
 const views = new Map()
 const visibleViews = new Set()
 const apps = new Map(APP_CONFIGS.map((appConfig) => [appConfig.id, appConfig]))
+const hostedAppHomeURLs = new Map()
 const localAppSignatures = new Map()
 const localAppScrollPositions = new Map()
 const popupWindows = new Set()
 const configuredPermissionPartitions = new Set()
+let githubIssuesReposState = {
+  owner: GITHUB_ISSUES_OWNER,
+  repos: [],
+  isLoading: false,
+  error: '',
+}
+let githubIssuesReposPromise = null
 
 function handleCompanionKeyboardActivity() {
   if (isCompanionSuppressedForTyping) {
@@ -845,8 +865,14 @@ function createHostedAppView(appConfig) {
   contents.on('did-redirect-navigation', () => {
     enforceHostedAppLocation(appConfig, contents)
   })
-  contents.on('did-navigate', emitState)
-  contents.on('did-navigate-in-page', emitState)
+  contents.on('did-navigate', () => {
+    enforceHostedAppLocation(appConfig, contents)
+    emitState()
+  })
+  contents.on('did-navigate-in-page', () => {
+    enforceHostedAppLocation(appConfig, contents)
+    emitState()
+  })
   contents.on('page-title-updated', emitState)
   contents.on('page-favicon-updated', emitState)
   contents.on('did-finish-load', () => {
@@ -861,6 +887,77 @@ function createHostedAppView(appConfig) {
 
   contents.loadURL(appConfig.initialURL)
   return view
+}
+
+function githubIssuesURL(repoName) {
+  return `https://github.com/${GITHUB_ISSUES_OWNER}/${encodeURIComponent(repoName)}/issues`
+}
+
+function isGitHubAuthRoute(pathname) {
+  const normalizedPath = `${pathname || ''}`.toLowerCase()
+
+  return (
+    normalizedPath === '/login' ||
+    normalizedPath.startsWith('/login/') ||
+    normalizedPath === '/session' ||
+    normalizedPath.startsWith('/sessions/')
+  )
+}
+
+function parseGitHubIssuesRoute(target) {
+  try {
+    const url = new URL(target)
+    const hostname = url.hostname.toLowerCase()
+
+    if (hostname !== 'github.com' && hostname !== 'www.github.com') {
+      return null
+    }
+
+    if (isGitHubAuthRoute(url.pathname)) {
+      return {
+        url,
+        repo: '',
+        isAllowed: true,
+        isIssuesRoute: false,
+      }
+    }
+
+    const segments = url.pathname.split('/').filter(Boolean)
+    const owner = `${segments[0] || ''}`.toLowerCase()
+    const repo = `${segments[1] || ''}`.trim()
+    const section = `${segments[2] || ''}`.toLowerCase()
+
+    if (owner !== GITHUB_ISSUES_OWNER.toLowerCase() || !repo) {
+      return {
+        url,
+        repo: '',
+        isAllowed: false,
+        isIssuesRoute: false,
+      }
+    }
+
+    return {
+      url,
+      repo,
+      isAllowed: section === 'issues',
+      isIssuesRoute: section === 'issues',
+    }
+  } catch {
+    return null
+  }
+}
+
+function syncHostedAppHomeURL(appId, target) {
+  if (appId !== 'github-issues') {
+    return
+  }
+
+  const route = parseGitHubIssuesRoute(target)
+  if (!route?.isIssuesRoute || !route.repo) {
+    return
+  }
+
+  hostedAppHomeURLs.set(appId, githubIssuesURL(route.repo))
 }
 
 function shouldKeepHostedNavigation(appConfig, target) {
@@ -1121,6 +1218,179 @@ function clearHostedAppUnreadCount(appId) {
   setHostedAppUnreadCount(appId, 0)
 }
 
+function selectedGitHubIssuesRepo() {
+  const currentURL = views.get('github-issues')?.webContents?.getURL?.()
+  const currentRoute = parseGitHubIssuesRoute(currentURL)
+  if (currentRoute?.repo) {
+    return currentRoute.repo
+  }
+
+  const homeRoute = parseGitHubIssuesRoute(hostedAppHomeURLs.get('github-issues'))
+  if (homeRoute?.repo) {
+    return homeRoute.repo
+  }
+
+  if (githubIssuesReposState.repos.some((repo) => repo.name === GITHUB_ISSUES_DEFAULT_REPO)) {
+    return GITHUB_ISSUES_DEFAULT_REPO
+  }
+
+  return githubIssuesReposState.repos[0]?.name || GITHUB_ISSUES_DEFAULT_REPO
+}
+
+function githubIssuesShellState() {
+  return {
+    owner: githubIssuesReposState.owner,
+    repos: githubIssuesReposState.repos.map((repo) => ({
+      name: repo.name,
+      url: repo.url,
+      issuesURL: githubIssuesURL(repo.name),
+    })),
+    isLoading: githubIssuesReposState.isLoading,
+    error: githubIssuesReposState.error,
+    selectedRepo: selectedGitHubIssuesRepo(),
+  }
+}
+
+async function refreshGitHubIssuesRepos() {
+  if (githubIssuesReposPromise) {
+    return githubIssuesReposPromise
+  }
+
+  githubIssuesReposState = {
+    ...githubIssuesReposState,
+    isLoading: true,
+    error: '',
+  }
+  emitState()
+
+  const issuesView = views.get('github-issues')
+  const contents = issuesView?.webContents
+  if (!contents || contents.isDestroyed()) {
+    githubIssuesReposState = {
+      ...githubIssuesReposState,
+      isLoading: false,
+      error: 'GitHub Issues view is unavailable.',
+    }
+    emitState()
+    return
+  }
+
+  const scrapeScript = `
+    (() => {
+      const owner = ${JSON.stringify(GITHUB_ISSUES_OWNER)}
+      const targetURL = ${JSON.stringify(GITHUB_ISSUES_REPOS_URL)}
+      const repoPattern = new RegExp('^/' + owner + '/([^/?#]+)$', 'i')
+
+      return fetch(targetURL, {
+        credentials: 'include',
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      }).then(async (response) => {
+        const html = await response.text()
+        const document = new DOMParser().parseFromString(html, 'text/html')
+        const loginRequired =
+          response.url.includes('/login') ||
+          Boolean(document.querySelector('form[action="/session"], #login'))
+
+        const candidates = [
+          ...document.querySelectorAll('a[itemprop="name codeRepository"]'),
+          ...document.querySelectorAll('#user-repositories-list a[href^="/' + owner + '/"]'),
+          ...document.querySelectorAll('a[data-hovercard-type="repository"][href^="/' + owner + '/"]'),
+        ]
+
+        const seen = new Set()
+        const repos = []
+
+        for (const anchor of candidates) {
+          const href = (anchor.getAttribute('href') || '').trim()
+          const match = href.match(repoPattern)
+          if (!match) {
+            continue
+          }
+
+          const name = decodeURIComponent((match[1] || '').trim())
+          if (!name || seen.has(name)) {
+            continue
+          }
+
+          seen.add(name)
+          repos.push({
+            name,
+            url: new URL(href, 'https://github.com').toString(),
+          })
+        }
+
+        return {
+          ok: response.ok,
+          status: response.status,
+          loginRequired,
+          repos,
+        }
+      })
+    })()
+  `
+
+  githubIssuesReposPromise = contents.executeJavaScript(scrapeScript, true)
+    .then((result) => {
+      if (!result?.ok) {
+        throw new Error(`GitHub repositories lookup failed with HTTP ${result?.status || 'unknown'}.`)
+      }
+
+      if (result.loginRequired) {
+        throw new Error('GitHub login required in the Issues app to load repository shortcuts.')
+      }
+
+      const repos = Array.isArray(result.repos)
+        ? result.repos
+            .map((repo) => ({
+              name: `${repo?.name || ''}`.trim(),
+              url: `${repo?.url || ''}`.trim(),
+            }))
+            .filter((repo) => repo.name && repo.url)
+        : []
+
+      if (repos.length < 1) {
+        throw new Error(`No repository links found on ${GITHUB_ISSUES_REPOS_URL}.`)
+      }
+
+      githubIssuesReposState = {
+        ...githubIssuesReposState,
+        repos,
+        isLoading: false,
+        error: '',
+      }
+
+      const preferredRepo = repos.find((repo) => repo.name === GITHUB_ISSUES_DEFAULT_REPO) || repos[0]
+      const currentRoute = parseGitHubIssuesRoute(views.get('github-issues')?.webContents?.getURL?.())
+      const currentRepoIsAvailable = currentRoute?.repo
+        ? repos.some((repo) => repo.name === currentRoute.repo)
+        : false
+
+      if (preferredRepo && (!hostedAppHomeURLs.has('github-issues') || !currentRepoIsAvailable)) {
+        const nextURL = githubIssuesURL(preferredRepo.name)
+        hostedAppHomeURLs.set('github-issues', nextURL)
+
+        if (!currentRepoIsAvailable && currentRoute?.isAllowed) {
+          views.get('github-issues')?.webContents.loadURL(nextURL).catch(() => {})
+        }
+      }
+    })
+    .catch((error) => {
+      githubIssuesReposState = {
+        ...githubIssuesReposState,
+        isLoading: false,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    })
+    .finally(() => {
+      githubIssuesReposPromise = null
+      emitState()
+    })
+
+  return githubIssuesReposPromise
+}
+
 function popupWindowOptions(appConfig) {
   return {
     width: POPUP_WIDTH,
@@ -1204,12 +1474,14 @@ function enforceHostedAppLocation(appConfig, contents) {
 
   const currentURL = contents.getURL()
   if (!currentURL || shouldOpenExternally(currentURL) || shouldKeepHostedNavigation(appConfig, currentURL)) {
+    syncHostedAppHomeURL(appConfig.id, currentURL)
     return
   }
 
   redirectingHostedAppIds.add(appConfig.id)
   openURLInPopup(appConfig, currentURL)
-  contents.loadURL(appConfig.initialURL).finally(() => {
+  const fallbackURL = hostedAppHomeURLs.get(appConfig.id) || appConfig.initialURL
+  contents.loadURL(fallbackURL).finally(() => {
     redirectingHostedAppIds.delete(appConfig.id)
     emitState()
   })
@@ -1583,6 +1855,10 @@ function setActiveApp(appId) {
     refreshLocalAppView(appId)
   }
 
+  if (appId === 'github-issues' && !githubIssuesReposState.isLoading && githubIssuesReposState.repos.length < 1) {
+    void refreshGitHubIssuesRepos()
+  }
+
   activeApp = appId
   ensureVisibleView(activeApp)
   emitState()
@@ -1627,6 +1903,7 @@ function openAppURL(appId, target) {
     return
   }
 
+  syncHostedAppHomeURL(appId, target)
   view.webContents.loadURL(target)
 }
 
@@ -1723,6 +2000,7 @@ function emitState() {
   mainWindow.webContents.send('shell:state', {
     activeApp,
     apps: allAppStates(conductorSnapshot),
+    githubIssues: githubIssuesShellState(),
     globalShortcut: GLOBAL_TOGGLE_SHORTCUT,
     updateOffer: currentUpdateOffer(),
   })
@@ -2533,6 +2811,7 @@ function createTrayIconDataUrl() {
 ipcMain.handle('shell:get-state', async () => ({
   activeApp,
   apps: allAppStates(),
+  githubIssues: githubIssuesShellState(),
   globalShortcut: GLOBAL_TOGGLE_SHORTCUT,
   updateOffer: currentUpdateOffer(),
 }))
@@ -2550,6 +2829,14 @@ ipcMain.on('shell:navigate', (_event, value) => {
     setActiveApp('browser')
   }
   navigateBrowser(value)
+})
+
+ipcMain.on('shell:open-app-url', (_event, appId, url) => {
+  if (!appId || typeof url !== 'string') {
+    return
+  }
+
+  openAppURL(appId, url)
 })
 
 ipcMain.on('shell:go-back', () => {
@@ -2612,6 +2899,7 @@ app.whenReady().then(() => {
   registerShortcuts()
   startConductorRefresh()
   startReleaseChecks()
+  void refreshGitHubIssuesRepos()
   setActiveApp(activeApp)
   showWindow()
   showCompanion()

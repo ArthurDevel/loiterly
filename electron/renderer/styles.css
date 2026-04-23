@@ -349,8 +349,20 @@ input {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.14));
 }
 
+.main.has-issues-shortcuts {
+  grid-template-rows: 68px auto minmax(0, 1fr);
+}
+
 .main.is-app-mode {
+  grid-template-rows: 68px auto minmax(0, 1fr);
+}
+
+.main.is-app-mode:not(.has-issues-shortcuts) {
   grid-template-rows: minmax(0, 1fr);
+}
+
+.main.is-app-mode.has-issues-shortcuts {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .toolbar {
@@ -454,6 +466,96 @@ input {
 .toolbar.is-app-mode .page-meta {
   justify-self: end;
   text-align: right;
+}
+
+.issues-shortcuts {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 0 18px 0 0;
+  margin: 16px 16px 0 0;
+}
+
+.issues-shortcuts[hidden] {
+  display: none !important;
+}
+
+.issues-shortcuts__meta {
+  flex: 0 0 auto;
+  min-width: 112px;
+  padding: 0 0 0 18px;
+}
+
+.issues-shortcuts__eyebrow {
+  margin: 0 0 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.issues-shortcuts__status {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.issues-shortcuts__list {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.issues-shortcuts__list::-webkit-scrollbar {
+  display: none;
+}
+
+.issues-shortcuts__chip,
+.issues-shortcuts__message {
+  flex: 0 0 auto;
+  min-height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(173, 184, 201, 0.24);
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow:
+    0 10px 20px rgba(103, 120, 146, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.issues-shortcuts__chip {
+  padding: 0 14px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.issues-shortcuts__chip:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(123, 141, 167, 0.32);
+  color: var(--text);
+}
+
+.issues-shortcuts__chip.is-active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(236, 243, 255, 0.92));
+  border-color: rgba(74, 132, 245, 0.34);
+  color: var(--accent-strong);
+}
+
+.issues-shortcuts__message {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px;
+  color: var(--muted);
+}
+
+.issues-shortcuts__message.is-error {
+  color: #b53a3a;
 }
 
 #page-title {
