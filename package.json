@@ -7,6 +7,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
+    "download:icons": "bash scripts/download-app-icons.sh",
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "release:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish always"
   },

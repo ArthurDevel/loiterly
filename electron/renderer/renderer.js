@@ -5,6 +5,7 @@ function createAppState(id, title, options = {}) {
     id,
     title,
     url: '',
+    iconURL: '',
     unreadCount: 0,
     canGoBack: false,
     canGoForward: false,
@@ -47,6 +48,7 @@ const state = {
 
 const elements = {
   tiles: Array.from(document.querySelectorAll('.tile')),
+  tileIcons: Array.from(document.querySelectorAll('.tile-icon')),
   tileBadges: Array.from(document.querySelectorAll('.tile-badge')),
   contentHost: document.getElementById('content-host'),
   contentStage: document.getElementById('content-stage'),
@@ -69,6 +71,32 @@ const elements = {
   updateAction: document.getElementById('update-action'),
   main: document.querySelector('.main'),
   toolbar: document.querySelector('.toolbar'),
+}
+
+function setTileIconSource(tileIcon, iconURL) {
+  const image = tileIcon.querySelector('.tile-icon__image')
+  const fallback = tileIcon.querySelector('.tile-icon__fallback')
+
+  if (!image || !fallback) {
+    return
+  }
+
+  if (!iconURL || image.dataset.failedSrc === iconURL) {
+    image.hidden = true
+    image.removeAttribute('src')
+    fallback.hidden = false
+    tileIcon.classList.remove('has-image')
+    return
+  }
+
+  if (image.dataset.src !== iconURL) {
+    image.src = iconURL
+    image.dataset.src = iconURL
+  }
+
+  image.hidden = false
+  fallback.hidden = true
+  tileIcon.classList.add('has-image')
 }
 
 function formatShortcut(shortcut) {
@@ -148,6 +176,11 @@ function render() {
 
   elements.tiles.forEach((tile) => {
     tile.classList.toggle('is-active', tile.dataset.app === state.activeApp)
+  })
+
+  elements.tileIcons.forEach((tileIcon) => {
+    const appId = tileIcon.dataset.iconFor
+    setTileIconSource(tileIcon, state.apps[appId]?.iconURL || '')
   })
 
   elements.tileBadges.forEach((badge) => {
@@ -255,6 +288,34 @@ function setState(nextState) {
 
   render()
 }
+
+elements.tileIcons.forEach((tileIcon) => {
+  const image = tileIcon.querySelector('.tile-icon__image')
+  const fallback = tileIcon.querySelector('.tile-icon__fallback')
+
+  if (!image || !fallback) {
+    return
+  }
+
+  image.addEventListener('error', () => {
+    const failedSrc = image.dataset.src || image.currentSrc || ''
+    if (failedSrc) {
+      image.dataset.failedSrc = failedSrc
+    }
+
+    image.hidden = true
+    image.removeAttribute('src')
+    fallback.hidden = false
+    tileIcon.classList.remove('has-image')
+  })
+
+  image.addEventListener('load', () => {
+    delete image.dataset.failedSrc
+    image.hidden = false
+    fallback.hidden = true
+    tileIcon.classList.add('has-image')
+  })
+})
 
 elements.tiles.forEach((tile) => {
   tile.addEventListener('click', () => {
