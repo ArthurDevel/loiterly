@@ -64,6 +64,15 @@ const APP_CONFIGS = [
     showNavigation: false,
   },
   {
+    id: 'linkedin',
+    label: 'LinkedIn',
+    type: 'remote',
+    partition: SHARED_REMOTE_PARTITION,
+    initialURL: 'https://www.linkedin.com/messaging/',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
     id: 'instagram',
     label: 'Instagram',
     type: 'remote',
@@ -110,6 +119,9 @@ let companionInterval = null
 let conductorRefreshInterval = null
 let companionPosition = null
 let lastCursorPoint = null
+let redirectingHostedAppIds = new Set()
+const linkedInStyleKeys = new WeakMap()
+const hostedAppUnreadCounts = new Map()
 
 const views = new Map()
 const visibleViews = new Set()
@@ -392,6 +404,7 @@ function createHostedAppView(appConfig) {
   const view = new WebContentsView({
     webPreferences: {
       partition: appConfig.partition,
+      preload: path.join(__dirname, 'hosted-app-preload.cjs'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
@@ -421,17 +434,387 @@ function createHostedAppView(appConfig) {
       return
     }
 
+    if (!shouldKeepHostedNavigation(appConfig, url)) {
+      event.preventDefault()
+      openURLInPopup(appConfig, url)
+      return
+    }
+
     emitState()
   })
   contents.on('did-start-loading', emitState)
   contents.on('did-stop-loading', emitState)
+  contents.on('did-redirect-navigation', () => {
+    enforceHostedAppLocation(appConfig, contents)
+  })
   contents.on('did-navigate', emitState)
   contents.on('did-navigate-in-page', emitState)
   contents.on('page-title-updated', emitState)
   contents.on('page-favicon-updated', emitState)
+  contents.on('did-finish-load', () => {
+    enforceHostedAppLocation(appConfig, contents)
+    syncHostedAppStyles(appConfig, contents)
+    syncHostedAppObservers(appConfig, contents)
+  })
+  contents.on('did-navigate-in-page', () => {
+    syncHostedAppStyles(appConfig, contents)
+    syncHostedAppObservers(appConfig, contents)
+  })
 
   contents.loadURL(appConfig.initialURL)
   return view
+}
+
+function shouldKeepHostedNavigation(appConfig, target) {
+  if (!target) {
+    return true
+  }
+
+  if (appConfig.id === 'linkedin') {
+    return isLinkedInMessagingRoute(target)
+  }
+
+  return true
+}
+
+function isLinkedInMessagingRoute(target) {
+  try {
+    const url = new URL(target)
+    const hostname = url.hostname.toLowerCase()
+    const pathname = url.pathname.toLowerCase()
+
+    if (hostname !== 'linkedin.com' && hostname !== 'www.linkedin.com') {
+      return false
+    }
+
+    return (
+      pathname === '/messaging' ||
+      pathname === '/messaging/' ||
+      pathname.startsWith('/messaging/') ||
+      pathname === '/login' ||
+      pathname.startsWith('/uas/') ||
+      pathname.startsWith('/checkpoint/') ||
+      pathname.startsWith('/authwall')
+    )
+  } catch {
+    return false
+  }
+}
+
+function syncHostedAppStyles(appConfig, contents) {
+  if (!appConfig || !contents || contents.isDestroyed()) {
+    return
+  }
+
+  if (appConfig.id !== 'linkedin') {
+    return
+  }
+
+  const currentURL = contents.getURL()
+  if (!currentURL || !isLinkedInMessagingRoute(currentURL)) {
+    return
+  }
+
+  const previousKey = linkedInStyleKeys.get(contents)
+  if (previousKey) {
+    contents.removeInsertedCSS(previousKey).catch(() => {})
+  }
+
+  contents.insertCSS(linkedInMessagingCSS()).then((key) => {
+    linkedInStyleKeys.set(contents, key)
+  }).catch(() => {})
+}
+
+function linkedInMessagingCSS() {
+  return `
+    .global-nav,
+    header.global-nav,
+    .msg-overlay-list-bubble,
+    .msg-overlay-conversation-bubble,
+    .msg-overlay-bubble-header,
+    .msg-overlay-bubble-header__controls,
+    .msg-overlay-bubble-header__badge,
+    .msg-overlay-list-bubble__container {
+      display: none !important;
+    }
+
+    body,
+    .application-outlet,
+    .authentication-outlet,
+    .scaffold-layout,
+    .msg-layout,
+    .msg-conversations-container__conversations-list,
+    .msg-conversations-container__conversation-card {
+      --global-nav-header-offset: 0px !important;
+      --global-nav-header-height: 0px !important;
+    }
+
+    .scaffold-layout,
+    .msg-layout,
+    .application-outlet,
+    .authentication-outlet {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+
+    .msg-conversations-container__conversations-list,
+    .msg-conversations-container__conversation-card,
+    .msg-thread,
+    .msg-thread__container,
+    .msg-thread__top-card {
+      top: 0 !important;
+      margin-top: 0 !important;
+    }
+  `
+}
+
+function syncHostedAppObservers(appConfig, contents) {
+  if (!appConfig || !contents || contents.isDestroyed()) {
+    return
+  }
+
+  if (appConfig.id !== 'linkedin') {
+    return
+  }
+
+  const currentURL = contents.getURL()
+  if (!currentURL || !isLinkedInMessagingInboxRoute(currentURL)) {
+    clearHostedAppUnreadCount(appConfig.id)
+    teardownLinkedInUnreadObserver(contents)
+    return
+  }
+
+  contents.executeJavaScript(linkedInUnreadObserverScript(appConfig.id)).catch(() => {})
+}
+
+function isLinkedInMessagingInboxRoute(target) {
+  try {
+    const url = new URL(target)
+    const pathname = url.pathname.toLowerCase()
+    return pathname === '/messaging' || pathname === '/messaging/' || pathname.startsWith('/messaging/')
+  } catch {
+    return false
+  }
+}
+
+function teardownLinkedInUnreadObserver(contents) {
+  if (!contents || contents.isDestroyed()) {
+    return
+  }
+
+  contents.executeJavaScript(`
+    (() => {
+      if (window.__loiterlyLinkedInUnreadObserver) {
+        window.__loiterlyLinkedInUnreadObserver.disconnect()
+        delete window.__loiterlyLinkedInUnreadObserver
+      }
+
+      if (window.__loiterlyLinkedInUnreadTimer) {
+        window.clearTimeout(window.__loiterlyLinkedInUnreadTimer)
+        delete window.__loiterlyLinkedInUnreadTimer
+      }
+
+      delete window.__loiterlyLinkedInLastUnreadCount
+    })()
+  `).catch(() => {})
+}
+
+function linkedInUnreadObserverScript(appId) {
+  return `
+    (() => {
+      const eventName = 'loiterly:hosted-app-unread-count'
+      const appId = ${JSON.stringify(appId)}
+
+      const parseNumericText = (value) => {
+        const normalized = \`\${value || ''}\`.trim()
+        if (!normalized) {
+          return 0
+        }
+
+        if (/^\\d+\\+$/.test(normalized)) {
+          return Number.parseInt(normalized, 10)
+        }
+
+        const match = normalized.match(/\\d+/)
+        return match ? Number.parseInt(match[0], 10) : 0
+      }
+
+      const readUnreadCount = () => {
+        const navBadge = document.querySelector('a[href*="/messaging"] [class*="notification-badge"]')
+        if (!navBadge) {
+          return 0
+        }
+
+        const text = navBadge.textContent || navBadge.getAttribute('aria-label') || ''
+        return parseNumericText(text)
+      }
+
+      const publishUnreadCount = () => {
+        const unreadCount = Math.max(0, Math.min(999, readUnreadCount()))
+        if (window.__loiterlyLinkedInLastUnreadCount === unreadCount) {
+          return
+        }
+
+        window.__loiterlyLinkedInLastUnreadCount = unreadCount
+        window.dispatchEvent(new CustomEvent(eventName, {
+          detail: {
+            appId,
+            unreadCount,
+          },
+        }))
+      }
+
+      const scheduleUnreadCheck = () => {
+        if (window.__loiterlyLinkedInUnreadTimer) {
+          window.clearTimeout(window.__loiterlyLinkedInUnreadTimer)
+        }
+
+        window.__loiterlyLinkedInUnreadTimer = window.setTimeout(() => {
+          publishUnreadCount()
+        }, 300)
+      }
+
+      if (window.__loiterlyLinkedInUnreadObserver) {
+        window.__loiterlyLinkedInUnreadObserver.disconnect()
+      }
+
+      const observer = new MutationObserver(() => {
+        scheduleUnreadCheck()
+      })
+
+      observer.observe(document.documentElement || document.body, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+      })
+
+      window.__loiterlyLinkedInUnreadObserver = observer
+      window.addEventListener('beforeunload', () => {
+        observer.disconnect()
+      }, { once: true })
+
+      publishUnreadCount()
+    })()
+  `
+}
+
+function normalizedUnreadCount(value) {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+
+  return Math.max(0, Math.min(999, Math.trunc(value)))
+}
+
+function setHostedAppUnreadCount(appId, unreadCount) {
+  const nextCount = normalizedUnreadCount(unreadCount)
+  const currentCount = hostedAppUnreadCounts.get(appId) || 0
+
+  if (currentCount === nextCount) {
+    return
+  }
+
+  hostedAppUnreadCounts.set(appId, nextCount)
+  emitState()
+}
+
+function clearHostedAppUnreadCount(appId) {
+  setHostedAppUnreadCount(appId, 0)
+}
+
+function popupWindowOptions(appConfig) {
+  return {
+    width: POPUP_WIDTH,
+    height: POPUP_HEIGHT,
+    minWidth: 420,
+    minHeight: 560,
+    show: false,
+    hasShadow: true,
+    backgroundColor: '#0b1220',
+    autoHideMenuBar: true,
+    fullscreenable: false,
+    maximizable: false,
+    minimizable: true,
+    resizable: true,
+    movable: true,
+    skipTaskbar: true,
+    titleBarStyle: 'hiddenInset',
+    parent: mainWindow || undefined,
+    modal: false,
+    webPreferences: {
+      partition: appConfig.partition,
+      preload: path.join(__dirname, 'hosted-app-preload.cjs'),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      autoplayPolicy: 'user-gesture-required',
+    },
+  }
+}
+
+function createManagedPopupWindow(appConfig, options = popupWindowOptions(appConfig)) {
+  const popupWindow = new BrowserWindow(options)
+  popupWindows.add(popupWindow)
+  attachCompanionInputTracking(popupWindow.webContents)
+  popupWindow.setAlwaysOnTop(true, 'floating')
+  popupWindow.setWindowButtonVisibility(true)
+  centerPopupWindow(popupWindow)
+
+  popupWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (shouldOpenExternally(url)) {
+      shell.openExternal(url)
+      return { action: 'deny' }
+    }
+
+    return popupWindowResponse(appConfig)
+  })
+
+  popupWindow.on('closed', () => {
+    popupWindows.delete(popupWindow)
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      mainWindow.focus()
+    }
+  })
+
+  popupWindow.once('ready-to-show', () => {
+    if (!popupWindow.isDestroyed()) {
+      centerPopupWindow(popupWindow)
+      showOnActiveSpace(popupWindow, () => {
+        popupWindow.show()
+        popupWindow.focus()
+      })
+    }
+  })
+
+  return popupWindow
+}
+
+function openURLInPopup(appConfig, target) {
+  const popupWindow = createManagedPopupWindow(appConfig)
+  popupWindow.loadURL(target)
+}
+
+function enforceHostedAppLocation(appConfig, contents) {
+  if (!appConfig || !contents || contents.isDestroyed()) {
+    return
+  }
+
+  if (redirectingHostedAppIds.has(appConfig.id)) {
+    return
+  }
+
+  const currentURL = contents.getURL()
+  if (!currentURL || shouldOpenExternally(currentURL) || shouldKeepHostedNavigation(appConfig, currentURL)) {
+    return
+  }
+
+  redirectingHostedAppIds.add(appConfig.id)
+  openURLInPopup(appConfig, currentURL)
+  contents.loadURL(appConfig.initialURL).finally(() => {
+    redirectingHostedAppIds.delete(appConfig.id)
+    emitState()
+  })
 }
 
 function configureSessionPermissions(browserSession, appConfig) {
@@ -562,67 +945,10 @@ function humanPermissionName(permission) {
 function popupWindowResponse(appConfig) {
   return {
     action: 'allow',
-    overrideBrowserWindowOptions: {
-      width: POPUP_WIDTH,
-      height: POPUP_HEIGHT,
-      minWidth: 420,
-      minHeight: 560,
-      show: false,
-      hasShadow: true,
-      backgroundColor: '#0b1220',
-      autoHideMenuBar: true,
-      fullscreenable: false,
-      maximizable: false,
-      minimizable: true,
-      resizable: true,
-      movable: true,
-      skipTaskbar: true,
-      titleBarStyle: 'hiddenInset',
-      parent: mainWindow || undefined,
-      modal: false,
-      webPreferences: {
-        partition: appConfig.partition,
-        contextIsolation: true,
-        sandbox: true,
-        nodeIntegration: false,
-        autoplayPolicy: 'user-gesture-required',
-      },
-    },
+    overrideBrowserWindowOptions: popupWindowOptions(appConfig),
     outlivesOpener: false,
     createWindow: (options) => {
-      const popupWindow = new BrowserWindow(options)
-      popupWindows.add(popupWindow)
-      attachCompanionInputTracking(popupWindow.webContents)
-      popupWindow.setAlwaysOnTop(true, 'floating')
-      popupWindow.setWindowButtonVisibility(true)
-      centerPopupWindow(popupWindow)
-
-      popupWindow.webContents.setWindowOpenHandler(({ url }) => {
-        if (shouldOpenExternally(url)) {
-          shell.openExternal(url)
-          return { action: 'deny' }
-        }
-
-        return popupWindowResponse(appConfig)
-      })
-
-      popupWindow.on('closed', () => {
-        popupWindows.delete(popupWindow)
-        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-          mainWindow.focus()
-        }
-      })
-
-      popupWindow.once('ready-to-show', () => {
-        if (!popupWindow.isDestroyed()) {
-          centerPopupWindow(popupWindow)
-          showOnActiveSpace(popupWindow, () => {
-            popupWindow.show()
-            popupWindow.focus()
-          })
-        }
-      })
-
+      const popupWindow = createManagedPopupWindow(appConfig, options)
       return popupWindow.webContents
     },
   }
@@ -926,6 +1252,7 @@ function defaultAppState(appId) {
     id: appId,
     title: appConfig ? appConfig.label : 'Loiterly',
     url: appConfig && appConfig.showAddressBar ? appConfig.initialURL || '' : '',
+    unreadCount: hostedAppUnreadCounts.get(appId) || 0,
     canGoBack: false,
     canGoForward: false,
     isLoading: false,
@@ -968,6 +1295,7 @@ function appState(appId, conductorSnapshot = null) {
     id: appId,
     url: appConfig && appConfig.showAddressBar ? (contents.getURL() || appConfig.initialURL || '') : '',
     title: contents.getTitle() || (appConfig ? appConfig.label : 'Loiterly'),
+    unreadCount: hostedAppUnreadCounts.get(appId) || 0,
     canGoBack: isRemoteApp && navigationHistory ? navigationHistory.canGoBack() : false,
     canGoForward: isRemoteApp && navigationHistory ? navigationHistory.canGoForward() : false,
     isLoading: contents.isLoading(),
@@ -1844,6 +2172,15 @@ ipcMain.on('backdrop:dismiss', () => {
 
 ipcMain.on('shell:open-external', (_event, url) => {
   shell.openExternal(url)
+})
+
+ipcMain.on('hosted-app:unread-count', (_event, payload) => {
+  const appId = typeof payload?.appId === 'string' ? payload.appId : ''
+  if (!appId || !apps.has(appId)) {
+    return
+  }
+
+  setHostedAppUnreadCount(appId, payload?.unreadCount)
 })
 
 app.on('before-quit', () => {
