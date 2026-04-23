@@ -24,11 +24,19 @@ const state = {
     }),
     notion: createAppState('notion', 'Notion'),
     github: createAppState('github', 'GitHub'),
+    'github-issues': createAppState('github-issues', 'Issues'),
     linkedin: createAppState('linkedin', 'LinkedIn'),
     instagram: createAppState('instagram', 'Instagram'),
     twitter: createAppState('twitter', 'Twitter'),
     links: createAppState('links', 'Links'),
     conductor: createAppState('conductor', 'Conductor'),
+  },
+  githubIssues: {
+    owner: 'ArthurDevel',
+    repos: [],
+    isLoading: false,
+    error: '',
+    selectedRepo: 'openpoke',
   },
   globalShortcut: 'CommandOrControl+Shift+L',
   updateOffer: null,
@@ -44,6 +52,9 @@ const elements = {
   navControls: document.querySelector('.nav-controls'),
   pageTitle: document.getElementById('page-title'),
   pageStatus: document.getElementById('page-status'),
+  issuesShortcuts: document.getElementById('issues-shortcuts'),
+  issuesShortcutsStatus: document.getElementById('issues-shortcuts-status'),
+  issuesShortcutsList: document.getElementById('issues-shortcuts-list'),
   goBack: document.getElementById('go-back'),
   goForward: document.getElementById('go-forward'),
   reload: document.getElementById('reload'),
@@ -76,9 +87,61 @@ function formatShortcut(shortcut) {
     .map((part) => symbolMap[part] || part.toUpperCase())
 }
 
+function createRepoShortcut(repo, owner, isActive) {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = `issues-shortcuts__chip${isActive ? ' is-active' : ''}`
+  button.textContent = repo.name
+  button.title = `${owner}/${repo.name}`
+  button.addEventListener('click', () => {
+    state.activeApp = 'github-issues'
+    render()
+    shell.setActiveApp('github-issues')
+    shell.openAppURL('github-issues', repo.issuesURL)
+  })
+  return button
+}
+
+function renderGitHubIssuesShortcuts() {
+  const isVisible = state.activeApp === 'github-issues'
+  elements.issuesShortcuts.hidden = !isVisible
+
+  if (!isVisible) {
+    elements.issuesShortcutsStatus.textContent = ''
+    elements.issuesShortcutsList.replaceChildren()
+    return
+  }
+
+  const { owner, repos, isLoading, error, selectedRepo } = state.githubIssues
+
+  if (isLoading && repos.length < 1) {
+    elements.issuesShortcutsStatus.textContent = 'Loading repositories...'
+    const loading = document.createElement('span')
+    loading.className = 'issues-shortcuts__message'
+    loading.textContent = 'Fetching repository shortcuts from GitHub.'
+    elements.issuesShortcutsList.replaceChildren(loading)
+    return
+  }
+
+  if (error && repos.length < 1) {
+    elements.issuesShortcutsStatus.textContent = 'Repositories unavailable'
+    const errorMessage = document.createElement('span')
+    errorMessage.className = 'issues-shortcuts__message is-error'
+    errorMessage.textContent = error
+    elements.issuesShortcutsList.replaceChildren(errorMessage)
+    return
+  }
+
+  elements.issuesShortcutsStatus.textContent = `${repos.length} repositories`
+  elements.issuesShortcutsList.replaceChildren(
+    ...repos.map((repo) => createRepoShortcut(repo, owner, repo.name === selectedRepo))
+  )
+}
+
 function render() {
   const currentApp = state.apps[state.activeApp] || createAppState(state.activeApp, state.activeApp)
   const showBrowserControls = currentApp.showAddressBar || currentApp.showNavigation
+  const showGitHubIssuesShortcuts = state.activeApp === 'github-issues'
 
   elements.tiles.forEach((tile) => {
     tile.classList.toggle('is-active', tile.dataset.app === state.activeApp)
@@ -98,6 +161,7 @@ function render() {
   })
 
   elements.main.classList.toggle('is-app-mode', !showBrowserControls)
+  elements.main.classList.toggle('has-issues-shortcuts', showGitHubIssuesShortcuts)
   elements.toolbar.classList.toggle('is-app-mode', !showBrowserControls)
   elements.addressForm.hidden = !currentApp.showAddressBar
   elements.navControls.hidden = !currentApp.showNavigation
@@ -146,6 +210,8 @@ function render() {
     elements.updateDetail.textContent = ''
     elements.updateAction.textContent = ''
   }
+
+  renderGitHubIssuesShortcuts()
 }
 
 function publishBounds() {
@@ -171,6 +237,13 @@ function setState(nextState) {
 
   if (nextState.globalShortcut) {
     state.globalShortcut = nextState.globalShortcut
+  }
+
+  if (nextState.githubIssues) {
+    state.githubIssues = {
+      ...state.githubIssues,
+      ...nextState.githubIssues,
+    }
   }
 
   if (Object.prototype.hasOwnProperty.call(nextState, 'updateOffer')) {
