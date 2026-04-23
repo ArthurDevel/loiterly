@@ -76,8 +76,8 @@ final class CompanionWindowController {
             currentPosition = target
             isInitialized = true
         } else {
-            currentPosition.x += (target.x - currentPosition.x) * 0.18
-            currentPosition.y += (target.y - currentPosition.y) * 0.18
+            currentPosition.x += (target.x - currentPosition.x) * 0.22
+            currentPosition.y += (target.y - currentPosition.y) * 0.22
         }
 
         window.setFrameOrigin(currentPosition)
