@@ -5,6 +5,7 @@ function createAppState(id, title, options = {}) {
     id,
     title,
     url: '',
+    unreadCount: 0,
     canGoBack: false,
     canGoForward: false,
     isLoading: false,
@@ -23,6 +24,7 @@ const state = {
     }),
     notion: createAppState('notion', 'Notion'),
     github: createAppState('github', 'GitHub'),
+    linkedin: createAppState('linkedin', 'LinkedIn'),
     links: createAppState('links', 'Links'),
   },
   globalShortcut: 'CommandOrControl+Shift+L',
@@ -69,7 +71,24 @@ function render() {
   const showBrowserControls = currentApp.showAddressBar || currentApp.showNavigation
 
   elements.tiles.forEach((tile) => {
+    const appState = state.apps[tile.dataset.app] || createAppState(tile.dataset.app, tile.dataset.app)
+    const unreadCount = Number.isFinite(appState.unreadCount) ? Math.max(0, Math.trunc(appState.unreadCount)) : 0
     tile.classList.toggle('is-active', tile.dataset.app === state.activeApp)
+    tile.classList.toggle('has-badge', unreadCount > 0)
+
+    let badge = tile.querySelector('.tile-badge')
+    if (unreadCount > 0) {
+      if (!badge) {
+        badge = document.createElement('span')
+        badge.className = 'tile-badge'
+        tile.appendChild(badge)
+      }
+
+      badge.textContent = unreadCount > 99 ? '99+' : `${unreadCount}`
+      badge.setAttribute('aria-label', `${unreadCount} unread messages`)
+    } else if (badge) {
+      badge.remove()
+    }
   })
 
   elements.main.classList.toggle('is-app-mode', !showBrowserControls)
