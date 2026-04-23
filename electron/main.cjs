@@ -374,7 +374,6 @@ function createTray() {
   if (process.platform === 'darwin') {
     tray.setTitle('L')
   }
-  tray.on('click', toggleWindowVisibility)
   refreshTrayMenu()
 }
 
@@ -505,16 +504,6 @@ function refreshTrayMenu() {
     return
   }
 
-  const appLaunchItems = APP_CONFIGS
-    .filter((appConfig) => appConfig.id !== 'links')
-    .map((appConfig) => ({
-      label: `Open ${appConfig.label}`,
-      click: () => {
-        setActiveApp(appConfig.id)
-        showWindow()
-      },
-    }))
-
   const menu = Menu.buildFromTemplate([
     {
       label: mainWindow && mainWindow.isVisible() ? 'Hide Loiterly' : 'Show Loiterly',
@@ -528,7 +517,6 @@ function refreshTrayMenu() {
         toggleCompanion()
       },
     },
-    ...appLaunchItems,
     { type: 'separator' },
     {
       label: `Version ${app.getVersion()}`,
