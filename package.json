@@ -5,9 +5,47 @@
   "description": "Floating Chromium workspace prototype for Loiterly",
   "main": "electron/main.cjs",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac dmg zip --publish never",
+    "release:mac": "electron-builder --mac dmg zip --publish always"
   },
   "dependencies": {
-    "electron": "^35.0.0"
+    "electron-updater": "^6.6.2"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "author": "ArthurDevel",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ArthurDevel/loiterly.git"
+  },
+  "build": {
+    "appId": "com.arthurdevel.loiterly",
+    "productName": "Loiterly",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ArthurDevel",
+        "repo": "loiterly"
+      }
+    ]
   }
 }

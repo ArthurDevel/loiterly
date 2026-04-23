@@ -137,6 +137,13 @@ input {
   gap: 10px;
 }
 
+.rail-meta {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .tile {
   position: relative;
   display: flex;
@@ -207,7 +214,6 @@ input {
 }
 
 .rail-footer {
-  margin-top: auto;
   padding: 8px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.38);
@@ -251,6 +257,89 @@ input {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+.update-card {
+  position: relative;
+  overflow: hidden;
+  padding: 12px;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at top right, rgba(255, 239, 199, 0.92), rgba(255, 239, 199, 0) 44%),
+    linear-gradient(180deg, rgba(28, 40, 66, 0.94), rgba(40, 55, 88, 0.98));
+  border: 1px solid rgba(255, 210, 122, 0.28);
+  box-shadow:
+    0 20px 34px rgba(40, 55, 88, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  color: #f7fbff;
+}
+
+.update-card::after {
+  content: "";
+  position: absolute;
+  inset: auto -34px -42px auto;
+  width: 110px;
+  height: 110px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(255, 198, 87, 0.28), rgba(255, 198, 87, 0));
+  pointer-events: none;
+}
+
+.update-card[hidden] {
+  display: none !important;
+}
+
+.update-card__eyebrow {
+  position: relative;
+  z-index: 1;
+  margin: 0 0 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255, 241, 214, 0.78);
+}
+
+.update-card__title {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.update-card__detail {
+  position: relative;
+  z-index: 1;
+  margin: 8px 0 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(236, 243, 255, 0.82);
+}
+
+.update-card__button {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffd57c, #ffb949);
+  color: #2e1a00;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow:
+    0 12px 24px rgba(255, 185, 73, 0.24),
+    inset 0 1px 0 rgba(255, 247, 224, 0.92);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+
+.update-card__button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.02);
+  box-shadow:
+    0 16px 28px rgba(255, 185, 73, 0.3),
+    inset 0 1px 0 rgba(255, 247, 224, 0.92);
 }
 
 .main {
