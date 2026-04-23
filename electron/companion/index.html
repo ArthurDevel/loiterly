@@ -8,9 +8,36 @@
   </head>
   <body>
     <div class="companion">
+      <div class="ember-ping" aria-hidden="true">
+        <div class="ember ember-a"></div>
+        <div class="ember ember-b"></div>
+        <div class="ember ember-c"></div>
+        <div class="ember ember-d"></div>
+        <div class="ember ember-e"></div>
+        <div class="ember ember-f"></div>
+        <div class="ember ember-g"></div>
+        <div class="ember ember-h"></div>
+      </div>
       <div class="companion-badge" hidden aria-hidden="true"></div>
-      <div class="triangle"></div>
-      <div class="sparkle"></div>
+      <svg class="triangle" viewBox="0 0 24 24" aria-hidden="true">
+        <defs>
+          <linearGradient id="triangleGradient" x1="3" y1="2" x2="18" y2="21" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#fff6d6"></stop>
+            <stop offset="0.58" stop-color="#ffb257"></stop>
+            <stop offset="1" stop-color="#ff7a2d"></stop>
+          </linearGradient>
+        </defs>
+        <path
+          class="triangle-fill"
+          d="M4.3 2.6L18 11.5L6.9 21.1Z"
+          shape-rendering="geometricPrecision"
+        ></path>
+        <path
+          class="triangle-outline"
+          d="M4.3 2.6L18 11.5L6.9 21.1Z"
+          shape-rendering="geometricPrecision"
+        ></path>
+      </svg>
     </div>
   </body>
 </html>

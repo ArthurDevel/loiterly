@@ -6,6 +6,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "start": "electron .",
+    "test": "node --test",
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "release:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish always"
   },

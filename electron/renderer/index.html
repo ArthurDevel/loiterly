@@ -10,11 +10,20 @@
     <div class="shell">
       <aside class="rail">
         <div class="brand drag-region">
-          <div class="brand-mark">▲</div>
-          <div class="brand-copy">
-            <strong>Loiterly</strong>
-            <span>Chromium shell</span>
+          <div class="brand-mark" aria-hidden="true">
+            <svg class="brand-mark__icon" viewBox="0 0 24 24">
+              <defs>
+                <linearGradient id="brandTriangleGradient" x1="3" y1="2" x2="18" y2="21" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stop-color="#fff6d6"></stop>
+                  <stop offset="0.58" stop-color="#ffb257"></stop>
+                  <stop offset="1" stop-color="#ff7a2d"></stop>
+                </linearGradient>
+              </defs>
+              <path class="brand-mark__fill" d="M4.3 2.6L18 11.5L6.9 21.1Z"></path>
+              <path class="brand-mark__outline" d="M4.3 2.6L18 11.5L6.9 21.1Z"></path>
+            </svg>
           </div>
+          <strong class="brand-title">Loiterly</strong>
         </div>
 
         <nav class="tiles">

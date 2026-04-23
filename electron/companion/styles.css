@@ -16,67 +16,316 @@ body {
   position: relative;
   width: 24px;
   height: 24px;
-  filter: drop-shadow(0 4px 8px rgba(74, 132, 245, 0.2));
+}
+
+.ember-ping {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: scale(0.82);
+  pointer-events: none;
+}
+
+.ember {
+  position: absolute;
+  border-radius: 999px;
+  will-change: transform, opacity;
 }
 
 .companion-badge {
   position: absolute;
-  top: 0;
-  right: 2px;
-  width: 8px;
-  height: 8px;
+  top: 4px;
+  right: 5px;
+  width: 5.5px;
+  height: 5.5px;
   border-radius: 999px;
-  background: #d84c4c;
-  border: 1.5px solid rgba(255, 255, 255, 0.96);
-  box-shadow: 0 4px 10px rgba(216, 76, 76, 0.28);
-  z-index: 2;
+  background: #ff5a62;
+  border: 1.15px solid #fff;
+  box-shadow: 0 0 5px rgba(255, 90, 98, 0.42);
+  z-index: 3;
 }
 
 .companion-badge[hidden] {
   display: none !important;
 }
 
+.ember-a {
+  left: 4px;
+  top: 8px;
+  width: 10px;
+  height: 10px;
+  background: radial-gradient(circle at 38% 38%, rgba(255, 197, 102, 0.98), rgba(255, 126, 58, 0.88) 62%, rgba(255, 126, 58, 0.06) 100%);
+  filter: blur(2.4px);
+}
+
+.ember-b {
+  right: 5px;
+  top: 5px;
+  width: 8px;
+  height: 8px;
+  background: radial-gradient(circle at 40% 40%, rgba(255, 236, 166, 0.98), rgba(255, 189, 64, 0.92) 58%, rgba(255, 189, 64, 0.08) 100%);
+  filter: blur(1.4px);
+}
+
+.ember-c {
+  right: 7px;
+  bottom: 5px;
+  width: 7px;
+  height: 7px;
+  background: radial-gradient(circle at 35% 35%, rgba(255, 167, 149, 0.96), rgba(255, 92, 122, 0.88) 60%, rgba(255, 92, 122, 0.06) 100%);
+  filter: blur(1.8px);
+}
+
+.ember-d {
+  right: 6px;
+  top: 4px;
+  width: 3.5px;
+  height: 3.5px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.72);
+}
+
+.ember-e {
+  right: 4px;
+  top: 2px;
+  width: 2.5px;
+  height: 2.5px;
+  background: rgba(255, 198, 72, 1);
+  box-shadow: 0 0 5px rgba(255, 179, 56, 0.74);
+}
+
+.ember-f {
+  left: 3px;
+  bottom: 7px;
+  width: 5px;
+  height: 5px;
+  background: radial-gradient(circle at 42% 42%, rgba(255, 244, 190, 0.98), rgba(255, 203, 86, 0.88) 60%, rgba(255, 203, 86, 0.08) 100%);
+  filter: blur(1px);
+}
+
+.ember-g {
+  left: 7px;
+  bottom: 3px;
+  width: 3px;
+  height: 3px;
+  background: rgba(255, 255, 255, 1);
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.72);
+}
+
+.ember-h {
+  left: 1px;
+  bottom: 4px;
+  width: 2.5px;
+  height: 2.5px;
+  background: rgba(255, 173, 108, 1);
+  box-shadow: 0 0 4px rgba(255, 145, 82, 0.64);
+}
+
 .triangle {
   position: absolute;
-  inset: 2px;
-  background: linear-gradient(135deg, #8ab9ff 0%, #4a84f5 100%);
-  clip-path: polygon(12% 8%, 78% 50%, 24% 92%);
-}
-
-.triangle::after {
-  content: "";
-  position: absolute;
   inset: 0;
-  clip-path: polygon(12% 8%, 78% 50%, 24% 92%);
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  box-sizing: border-box;
+  transform: rotate(-7deg);
+  z-index: 1;
+  overflow: visible;
 }
 
-.sparkle {
-  position: absolute;
-  right: 4px;
-  top: 3px;
-  width: 6px;
-  height: 6px;
+.triangle-fill {
+  fill: url(#triangleGradient);
 }
 
-.sparkle::before,
-.sparkle::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  background: rgba(255, 255, 255, 0.96);
-  border-radius: 999px;
-  transform: translate(-50%, -50%);
+.triangle-outline {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.45;
+  stroke-linejoin: miter;
+  vector-effect: non-scaling-stroke;
 }
 
-.sparkle::before {
-  width: 1.3px;
-  height: 6px;
+.companion.is-pinging .ember-ping {
+  animation: emberPingFade 900ms ease-out 1 both;
 }
 
-.sparkle::after {
-  width: 6px;
-  height: 1.3px;
+.companion.is-pinging .ember-a {
+  animation: emberPulseA 900ms ease-out 1 both;
+}
+
+.companion.is-pinging .ember-b {
+  animation: emberPulseB 880ms ease-out 1 both;
+}
+
+.companion.is-pinging .ember-c {
+  animation: emberPulseC 940ms ease-out 1 both;
+}
+
+.companion.is-pinging .ember-d {
+  animation: emberSparkD 620ms ease-out 1 both 40ms;
+}
+
+.companion.is-pinging .ember-e {
+  animation: emberSparkE 700ms ease-out 1 both 140ms;
+}
+
+.companion.is-pinging .ember-f {
+  animation: emberPulseF 820ms ease-out 1 both 110ms;
+}
+
+.companion.is-pinging .ember-g {
+  animation: emberSparkG 560ms ease-out 1 both 220ms;
+}
+
+.companion.is-pinging .ember-h {
+  animation: emberSparkH 640ms ease-out 1 both 300ms;
+}
+
+@keyframes emberPingFade {
+  0% {
+    opacity: 0;
+    transform: scale(0.78);
+  }
+
+  15% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.16);
+  }
+}
+
+@keyframes emberPulseA {
+  0% {
+    transform: translate3d(0, 1px, 0) scale(0.7);
+    opacity: 0;
+  }
+
+  25% {
+    transform: translate3d(0, 0, 0) scale(1.02);
+    opacity: 0.96;
+  }
+
+  100% {
+    transform: translate3d(-1px, 1px, 0) scale(1.12);
+    opacity: 0;
+  }
+}
+
+@keyframes emberPulseB {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.64);
+    opacity: 0;
+  }
+
+  22% {
+    transform: translate3d(0, 0, 0) scale(1.04);
+    opacity: 0.94;
+  }
+
+  100% {
+    transform: translate3d(1px, -1px, 0) scale(1.1);
+    opacity: 0;
+  }
+}
+
+@keyframes emberPulseC {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.68);
+    opacity: 0;
+  }
+
+  28% {
+    transform: translate3d(0, 0, 0) scale(1.04);
+    opacity: 0.88;
+  }
+
+  100% {
+    transform: translate3d(0, 1px, 0) scale(1.12);
+    opacity: 0;
+  }
+}
+
+@keyframes emberSparkD {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.4);
+    opacity: 0;
+  }
+
+  40% {
+    transform: translate3d(0, 0, 0) scale(1.08);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate3d(-1px, -1px, 0) scale(0.86);
+    opacity: 0;
+  }
+}
+
+@keyframes emberSparkE {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.35);
+    opacity: 0;
+  }
+
+  45% {
+    transform: translate3d(0, 0, 0) scale(1.12);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate3d(0, -1px, 0) scale(0.82);
+    opacity: 0;
+  }
+}
+
+@keyframes emberPulseF {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.56);
+    opacity: 0;
+  }
+
+  30% {
+    transform: translate3d(0, 0, 0) scale(1.02);
+    opacity: 0.9;
+  }
+
+  100% {
+    transform: translate3d(-1px, 1px, 0) scale(1.08);
+    opacity: 0;
+  }
+}
+
+@keyframes emberSparkG {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.28);
+    opacity: 0;
+  }
+
+  48% {
+    transform: translate3d(0, 0, 0) scale(1.18);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate3d(0, 1px, 0) scale(0.76);
+    opacity: 0;
+  }
+}
+
+@keyframes emberSparkH {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.28);
+    opacity: 0;
+  }
+
+  38% {
+    transform: translate3d(0, 0, 0) scale(1.06);
+    opacity: 0.92;
+  }
+
+  100% {
+    transform: translate3d(-1px, 0, 0) scale(0.8);
+    opacity: 0;
+  }
 }

@@ -1,8 +1,16 @@
 const path = require('node:path')
 const os = require('node:os')
 const fs = require('node:fs')
-const { execFileSync } = require('node:child_process')
+const { execFileSync, spawn } = require('node:child_process')
+const readline = require('node:readline')
 const { autoUpdater } = require('electron-updater')
+const {
+  canTriggerCompanionPing,
+  isCompanionSuppressed: computeCompanionSuppressed,
+  normalizeCompanionInputEvent,
+  shouldReleaseTypingSuppression,
+  shouldTriggerUnreadPing,
+} = require('./companion/state.cjs')
 const {
   app,
   BrowserWindow,
@@ -188,6 +196,7 @@ let conductorRefreshInterval = null
 let releaseCheckInterval = null
 let companionPosition = null
 let lastCursorPoint = null
+let lastCompanionUnreadCount = null
 let isCheckingForUpdates = false
 let isFetchingLatestRelease = false
 let updateStatusLabel = 'Manual updates only'
@@ -220,6 +229,7 @@ let githubIssuesReposState = {
 let githubIssuesReposPromise = null
 const claudeTranscriptPathCache = new Map()
 const gitMetadataCache = new Map()
+let companionInputMonitorProcess = null
 
 function handleCompanionKeyboardActivity() {
   if (isCompanionSuppressedForTyping) {
@@ -235,8 +245,10 @@ function handleCompanionPointerActivity() {
     return
   }
 
-  isCompanionSuppressedForTyping = false
-  syncCompanionVisibility()
+  if (shouldReleaseTypingSuppression('pointer')) {
+    isCompanionSuppressedForTyping = false
+    syncCompanionVisibility()
+  }
 }
 
 function attachCompanionInputTracking(contents) {
@@ -253,6 +265,58 @@ function attachCompanionInputTracking(contents) {
   contents.on('before-mouse-event', () => {
     handleCompanionPointerActivity()
   })
+}
+
+function startCompanionInputMonitor() {
+  if (process.platform !== 'darwin' || companionInputMonitorProcess) {
+    return
+  }
+
+  const monitorPath = path.join(__dirname, 'native', 'companion-input-monitor.swift')
+  const child = spawn('swift', [monitorPath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  companionInputMonitorProcess = child
+
+  const stdout = readline.createInterface({ input: child.stdout })
+  stdout.on('line', (line) => {
+    const eventType = normalizeCompanionInputEvent(line)
+    if (eventType === 'keyboard') {
+      handleCompanionKeyboardActivity()
+      return
+    }
+
+    if (eventType === 'pointer') {
+      handleCompanionPointerActivity()
+    }
+  })
+
+  child.stderr.on('data', (chunk) => {
+    const message = `${chunk || ''}`.trim()
+    if (message) {
+      console.error(`[companion-input-monitor] ${message}`)
+    }
+  })
+
+  child.on('exit', () => {
+    stdout.close()
+    if (companionInputMonitorProcess === child) {
+      companionInputMonitorProcess = null
+      if (!isQuitting && app.isReady()) {
+        setTimeout(startCompanionInputMonitor, 1000)
+      }
+    }
+  })
+}
+
+function stopCompanionInputMonitor() {
+  if (!companionInputMonitorProcess) {
+    return
+  }
+
+  companionInputMonitorProcess.kill('SIGTERM')
+  companionInputMonitorProcess = null
 }
 
 function createShellWindow() {
@@ -2062,7 +2126,14 @@ function updateCompanionUnreadBadge(conductorSnapshot = null) {
   }
 
   const snapshot = conductorSnapshot || loadConductorSnapshot()
-  const hasUnread = snapshot.unreadAgents.length > 0
+  const unreadCount = snapshot.unreadAgents.reduce((total, session) => (
+    total + Math.max(0, Number(session?.unreadCount || 0))
+  ), 0)
+  const hasUnread = unreadCount > 0
+
+  if (shouldTriggerUnreadPing(lastCompanionUnreadCount, unreadCount)) {
+    triggerCompanionPing()
+  }
 
   companionWindow.webContents.executeJavaScript(
     `
@@ -2070,6 +2141,39 @@ function updateCompanionUnreadBadge(conductorSnapshot = null) {
         const badge = document.querySelector('.companion-badge')
         if (!badge) return
         badge.hidden = ${hasUnread ? 'false' : 'true'}
+      })()
+    `,
+    true
+  ).catch(() => {})
+
+  lastCompanionUnreadCount = unreadCount
+}
+
+function triggerCompanionPing() {
+  if (!companionWindow || companionWindow.isDestroyed()) {
+    return
+  }
+
+  if (!canTriggerCompanionPing({
+    isCompanionEnabled,
+    isCompanionSuppressedForTyping,
+    isMainWindowVisible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+  })) {
+    return
+  }
+
+  companionWindow.webContents.executeJavaScript(
+    `
+      (() => {
+        const companion = document.querySelector('.companion')
+        if (!companion) return
+        window.__loiterlyCompanionPingTimer && clearTimeout(window.__loiterlyCompanionPingTimer)
+        companion.classList.remove('is-pinging')
+        void companion.offsetWidth
+        companion.classList.add('is-pinging')
+        window.__loiterlyCompanionPingTimer = setTimeout(() => {
+          companion.classList.remove('is-pinging')
+        }, 960)
       })()
     `,
     true
@@ -2871,6 +2975,7 @@ function hideWindow() {
   backdropWindow.hide()
   refreshTrayMenu()
   syncCompanionVisibility()
+  triggerCompanionPing()
 }
 
 function toggleWindowVisibility() {
@@ -2886,7 +2991,11 @@ function toggleWindowVisibility() {
 }
 
 function isCompanionSuppressed() {
-  return isCompanionSuppressedForTyping || Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+  return computeCompanionSuppressed({
+    isCompanionEnabled,
+    isCompanionSuppressedForTyping,
+    isMainWindowVisible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+  })
 }
 
 function syncCompanionVisibility() {
@@ -3003,14 +3112,6 @@ function updateCompanionPosition() {
   }
 
   const cursor = screen.getCursorScreenPoint()
-
-  if (
-    isCompanionSuppressedForTyping &&
-    lastCursorPoint &&
-    (cursor.x !== lastCursorPoint.x || cursor.y !== lastCursorPoint.y)
-  ) {
-    isCompanionSuppressedForTyping = false
-  }
 
   lastCursorPoint = { x: cursor.x, y: cursor.y }
 
@@ -4624,6 +4725,7 @@ ipcMain.on('hosted-app:unread-count', (_event, payload) => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  stopCompanionInputMonitor()
 })
 
 app.whenReady().then(() => {
@@ -4634,6 +4736,7 @@ app.whenReady().then(() => {
   mainWindow = createShellWindow()
   backdropWindow = createBackdropWindow()
   companionWindow = createCompanionWindow()
+  startCompanionInputMonitor()
   createViews()
   createTray()
   configureAutoUpdater()
@@ -4647,6 +4750,7 @@ app.whenReady().then(() => {
 })
 
 app.on('will-quit', () => {
+  stopCompanionInputMonitor()
   globalShortcut.unregisterAll()
 })
 
