@@ -1,4 +1,6 @@
 const path = require('node:path')
+const os = require('node:os')
+const { execFileSync } = require('node:child_process')
 const {
   app,
   BrowserWindow,
@@ -20,10 +22,18 @@ const POPUP_WIDTH = 720
 const POPUP_HEIGHT = 700
 const POPUP_MARGIN = 48
 const GLOBAL_TOGGLE_SHORTCUT = 'CommandOrControl+Shift+L'
-const COMPANION_SIZE = 20
+const COMPANION_SIZE = 24
 const COMPANION_OFFSET = { x: 10, y: -14 }
 const ACTIVE_SPACE_HOP_DELAY_MS = 140
+const CONDUCTOR_REFRESH_MS = 5000
 const SHARED_REMOTE_PARTITION = 'persist:loiterly-browser'
+const CONDUCTOR_DB_PATH = path.join(
+  os.homedir(),
+  'Library',
+  'Application Support',
+  'com.conductor.app',
+  'conductor.db'
+)
 const APP_CONFIGS = [
   {
     id: 'browser',
@@ -59,6 +69,13 @@ const APP_CONFIGS = [
     showAddressBar: false,
     showNavigation: false,
   },
+  {
+    id: 'conductor',
+    label: 'Conductor',
+    type: 'local',
+    showAddressBar: false,
+    showNavigation: false,
+  },
 ]
 
 let tray = null
@@ -71,12 +88,15 @@ let contentBounds = { x: 120, y: 84, width: 980, height: 640 }
 let isCompanionEnabled = true
 let isCompanionSuppressedForTyping = false
 let companionInterval = null
+let conductorRefreshInterval = null
 let companionPosition = null
 let lastCursorPoint = null
 
 const views = new Map()
 const visibleViews = new Set()
 const apps = new Map(APP_CONFIGS.map((appConfig) => [appConfig.id, appConfig]))
+const localAppSignatures = new Map()
+const localAppScrollPositions = new Map()
 const popupWindows = new Set()
 const configuredPermissionPartitions = new Set()
 
@@ -269,6 +289,9 @@ function createCompanionWindow() {
   window.setIgnoreMouseEvents(true, { forward: true })
   window.setWindowButtonVisibility(false)
   window.loadFile(path.join(__dirname, 'companion', 'index.html'))
+  window.webContents.on('did-finish-load', () => {
+    updateCompanionUnreadBadge()
+  })
 
   return window
 }
@@ -324,6 +347,13 @@ function refreshTrayMenu() {
       label: 'Open GitHub',
       click: () => {
         setActiveApp('github')
+        showWindow()
+      },
+    },
+    {
+      label: 'Open Conductor',
+      click: () => {
+        setActiveApp('conductor')
         showWindow()
       },
     },
@@ -682,12 +712,99 @@ function createLocalAppView(appConfig) {
   })
 
   attachCompanionInputTracking(view.webContents)
-  const html = appConfig.id === 'links' ? linksMarkup() : ''
-  view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+  refreshLocalAppView(appConfig.id, view)
   view.webContents.on('page-title-updated', emitState)
   view.webContents.on('did-finish-load', emitState)
   view.webContents.executeJavaScript(`document.title = ${JSON.stringify(appConfig.label)}`)
   return view
+}
+
+function refreshLocalAppView(appId, existingView = null) {
+  const view = existingView || views.get(appId)
+  if (!view || view.webContents.isDestroyed()) {
+    return
+  }
+
+  let html = ''
+  let signature = `${appId}:static`
+  if (appId === 'links') {
+    html = linksMarkup()
+  } else if (appId === 'conductor') {
+    const snapshot = loadConductorSnapshot()
+    html = conductorMarkup(snapshot)
+    signature = snapshot.signature
+  }
+
+  if (!html) {
+    return
+  }
+
+  if (localAppSignatures.get(appId) === signature) {
+    return
+  }
+
+  const currentURL = view.webContents.getURL()
+  const shouldCaptureScroll =
+    Boolean(currentURL) &&
+    currentURL !== 'about:blank' &&
+    !view.webContents.isLoading()
+
+  if (!shouldCaptureScroll) {
+    localAppSignatures.set(appId, signature)
+    view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    return
+  }
+
+  captureLocalAppScrollPosition(appId, view).then((scrollPosition) => {
+    if (!view || view.webContents.isDestroyed()) {
+      return
+    }
+
+    localAppSignatures.set(appId, signature)
+    view.webContents.once('did-finish-load', () => {
+      restoreLocalAppScrollPosition(appId, view, scrollPosition)
+    })
+    view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+  })
+}
+
+function captureLocalAppScrollPosition(appId, view) {
+  const fallbackPosition = localAppScrollPositions.get(appId) || { x: 0, y: 0 }
+  if (!view || view.webContents.isDestroyed()) {
+    return Promise.resolve(fallbackPosition)
+  }
+
+  return view.webContents.executeJavaScript('({ x: window.scrollX || 0, y: window.scrollY || 0 })', true)
+    .then((position) => {
+      const nextPosition = sanitizeScrollPosition(position, fallbackPosition)
+      localAppScrollPositions.set(appId, nextPosition)
+      return nextPosition
+    })
+    .catch(() => fallbackPosition)
+}
+
+function restoreLocalAppScrollPosition(appId, view, scrollPosition) {
+  if (!view || view.webContents.isDestroyed()) {
+    return
+  }
+
+  const nextPosition = sanitizeScrollPosition(
+    scrollPosition,
+    localAppScrollPositions.get(appId) || { x: 0, y: 0 }
+  )
+  localAppScrollPositions.set(appId, nextPosition)
+  view.webContents.executeJavaScript(
+    `window.scrollTo(${nextPosition.x}, ${nextPosition.y});`,
+    true
+  ).catch(() => {})
+}
+
+function sanitizeScrollPosition(position, fallbackPosition) {
+  const fallback = fallbackPosition || { x: 0, y: 0 }
+  const x = Number.isFinite(position?.x) ? Math.max(0, Math.round(position.x)) : fallback.x
+  const y = Number.isFinite(position?.y) ? Math.max(0, Math.round(position.y)) : fallback.y
+
+  return { x, y }
 }
 function ensureVisibleView(appId) {
   if (!mainWindow) {
@@ -732,6 +849,11 @@ function layoutActiveView() {
 function setActiveApp(appId) {
   if (!apps.has(appId) || !views.has(appId)) {
     return
+  }
+
+  const appConfig = apps.get(appId)
+  if (appConfig && appConfig.type === 'local') {
+    refreshLocalAppView(appId)
   }
 
   activeApp = appId
@@ -806,10 +928,25 @@ function defaultAppState(appId) {
     isLoading: false,
     showAddressBar: appConfig ? appConfig.showAddressBar : false,
     showNavigation: appConfig ? appConfig.showNavigation : false,
+    activeCount: 0,
+    unreadCount: 0,
+    hasAlert: false,
   }
 }
 
-function appState(appId) {
+function appState(appId, conductorSnapshot = null) {
+  if (appId === 'conductor') {
+    const snapshot = conductorSnapshot || loadConductorSnapshot()
+
+    return {
+      ...defaultAppState(appId),
+      title: 'Conductor',
+      activeCount: snapshot.activeAgents.length,
+      unreadCount: snapshot.unreadAgents.length,
+      hasAlert: snapshot.unreadAgents.length > 0,
+    }
+  }
+
   const view = views.get(appId)
   if (!view) {
     return defaultAppState(appId)
@@ -836,11 +973,12 @@ function appState(appId) {
   }
 }
 
-function allAppStates() {
+function allAppStates(conductorSnapshot = null) {
   const state = {}
+  const snapshot = conductorSnapshot || loadConductorSnapshot()
 
   for (const appConfig of APP_CONFIGS) {
-    state[appConfig.id] = appState(appConfig.id)
+    state[appConfig.id] = appState(appConfig.id, snapshot)
   }
 
   return state
@@ -851,13 +989,54 @@ function emitState() {
     return
   }
 
+  const conductorSnapshot = loadConductorSnapshot()
+
   mainWindow.webContents.send('shell:state', {
     activeApp,
-    apps: allAppStates(),
+    apps: allAppStates(conductorSnapshot),
     globalShortcut: GLOBAL_TOGGLE_SHORTCUT,
   })
 
+  updateCompanionUnreadBadge(conductorSnapshot)
   refreshTrayMenu()
+}
+
+function updateCompanionUnreadBadge(conductorSnapshot = null) {
+  if (!companionWindow || companionWindow.isDestroyed()) {
+    return
+  }
+
+  const snapshot = conductorSnapshot || loadConductorSnapshot()
+  const hasUnread = snapshot.unreadAgents.length > 0
+
+  companionWindow.webContents.executeJavaScript(
+    `
+      (() => {
+        const badge = document.querySelector('.companion-badge')
+        if (!badge) return
+        badge.hidden = ${hasUnread ? 'false' : 'true'}
+      })()
+    `,
+    true
+  ).catch(() => {})
+}
+
+function startConductorRefresh() {
+  if (conductorRefreshInterval) {
+    return
+  }
+
+  conductorRefreshInterval = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return
+    }
+
+    emitState()
+
+    if (activeApp === 'conductor' && mainWindow.isVisible()) {
+      refreshLocalAppView('conductor')
+    }
+  }, CONDUCTOR_REFRESH_MS)
 }
 
 function clampWindowOrigin(point) {
@@ -1179,6 +1358,418 @@ function linksMarkup() {
   `
 }
 
+function loadConductorSnapshot() {
+  const sql = `
+    SELECT COALESCE(
+      json_group_array(
+        json_object(
+          'sessionId', session_id,
+          'workspaceId', workspace_id,
+          'workspace', workspace,
+          'repo', repo,
+          'branch', branch,
+          'title', title,
+          'status', status,
+          'agentType', agent_type,
+          'model', model,
+          'updatedAt', updated_at,
+          'workspaceUnread', workspace_unread,
+          'sessionUnread', session_unread,
+          'unreadCount', unread_count
+        )
+      ),
+      '[]'
+    )
+    FROM (
+      SELECT
+        s.id AS session_id,
+        w.id AS workspace_id,
+        COALESCE(w.directory_name, 'Unknown workspace') AS workspace,
+        COALESCE(r.name, 'Unknown repo') AS repo,
+        COALESCE(w.branch, '') AS branch,
+        COALESCE(s.title, 'Untitled session') AS title,
+        COALESCE(s.status, 'unknown') AS status,
+        COALESCE(s.agent_type, 'unknown') AS agent_type,
+        COALESCE(s.model, 'unknown') AS model,
+        COALESCE(s.updated_at, s.created_at, '') AS updated_at,
+        COALESCE(w.unread, 0) AS workspace_unread,
+        COALESCE(s.unread_count, 0) AS session_unread,
+        MAX(COALESCE(w.unread, 0), COALESCE(s.unread_count, 0)) AS unread_count
+      FROM sessions s
+      JOIN workspaces w ON w.active_session_id = s.id
+      LEFT JOIN repos r ON r.id = w.repository_id
+      WHERE s.status IN ('working', 'idle')
+        AND w.state = 'ready'
+      ORDER BY datetime(COALESCE(s.updated_at, s.created_at)) DESC
+    );
+  `
+
+  try {
+    const raw = execFileSync('sqlite3', [CONDUCTOR_DB_PATH, sql], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+
+    const sessions = raw ? JSON.parse(raw) : []
+    const normalizedSessions = Array.isArray(sessions) ? sessions : []
+
+    return {
+      activeAgents: normalizedSessions.filter((session) => session.status === 'working'),
+      idleAgents: normalizedSessions.filter((session) => session.status === 'idle'),
+      unreadAgents: normalizedSessions.filter((session) => Number(session.unreadCount || 0) > 0),
+      dbPath: CONDUCTOR_DB_PATH,
+      refreshedAt: new Date().toISOString(),
+      signature: JSON.stringify(normalizedSessions),
+    }
+  } catch (error) {
+    return {
+      activeAgents: [],
+      idleAgents: [],
+      unreadAgents: [],
+      dbPath: CONDUCTOR_DB_PATH,
+      refreshedAt: new Date().toISOString(),
+      error: error instanceof Error ? error.message : String(error),
+      signature: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+    }
+  }
+}
+
+function conductorMarkup({ activeAgents, idleAgents, unreadAgents, dbPath, refreshedAt, error }) {
+  const refreshedLabel = escapeHtml(
+    new Date(refreshedAt).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'medium',
+    })
+  )
+
+  const sections = [
+    sessionSectionMarkup({
+      title: 'Active',
+      description: 'Sessions currently running in Conductor.',
+      sessions: activeAgents,
+      pillClassName: 'status-pill',
+      pillLabel: 'Working',
+      emptyTitle: 'No active agents',
+      emptyCopy: 'Conductor currently has no sessions with a <code>working</code> status.',
+    }),
+    sessionSectionMarkup({
+      title: 'Needs Input',
+      description: 'Idle sessions that are waiting on the user.',
+      sessions: idleAgents,
+      pillClassName: 'status-pill status-pill--alert',
+      pillLabel: 'Idle',
+      emptyTitle: 'No idle agents',
+      emptyCopy: 'No ready Conductor workspaces are currently idle.',
+    }),
+  ].join('')
+
+  const errorBanner = error
+    ? `<div class="error-banner">Could not read Conductor state: ${escapeHtml(error)}</div>`
+    : ''
+
+  return `
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Conductor</title>
+        <style>
+          :root {
+            color-scheme: light;
+            --bg: #edf2f7;
+            --panel: rgba(255, 255, 255, 0.76);
+            --panel-strong: rgba(255, 255, 255, 0.9);
+            --border: rgba(147, 163, 184, 0.24);
+            --text: #172030;
+            --muted: #617086;
+            --accent: #2e68db;
+            --accent-soft: rgba(74, 132, 245, 0.12);
+            --success: #0f9d6c;
+            --success-soft: rgba(15, 157, 108, 0.14);
+            --alert: #d84c4c;
+            --alert-soft: rgba(216, 76, 76, 0.12);
+          }
+          * {
+            box-sizing: border-box;
+          }
+          body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 28px;
+            background:
+              radial-gradient(circle at top left, rgba(255,255,255,0.86), rgba(255,255,255,0) 34%),
+              linear-gradient(180deg, #fbfcfe 0%, var(--bg) 100%);
+            color: var(--text);
+            font-family: "SF Pro Display", "Helvetica Neue", sans-serif;
+          }
+          header {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 20px;
+          }
+          h1 {
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: -0.04em;
+          }
+          .subtitle {
+            margin: 6px 0 0;
+            color: var(--muted);
+            max-width: 760px;
+            line-height: 1.45;
+          }
+          .sections {
+            display: grid;
+            gap: 24px;
+          }
+          .section-heading {
+            display: flex;
+            align-items: end;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 12px;
+          }
+          .section-heading h2 {
+            margin: 0;
+            font-size: 20px;
+            letter-spacing: -0.03em;
+          }
+          .section-heading p {
+            margin: 4px 0 0;
+            color: var(--muted);
+          }
+          .meta {
+            text-align: right;
+            color: var(--muted);
+            font-size: 12px;
+          }
+          .meta code {
+            display: block;
+            margin-top: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 340px;
+          }
+          .summary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-weight: 600;
+            margin-bottom: 18px;
+          }
+          .error-banner {
+            margin-bottom: 16px;
+            padding: 14px 16px;
+            border-radius: 16px;
+            background: var(--alert-soft);
+            color: var(--alert);
+            border: 1px solid rgba(178, 73, 73, 0.18);
+          }
+          .agent-list {
+            display: grid;
+            gap: 16px;
+          }
+          .agent-card,
+          .empty-state {
+            padding: 18px 20px;
+            border-radius: 22px;
+            background: linear-gradient(180deg, var(--panel-strong), var(--panel));
+            border: 1px solid var(--border);
+            box-shadow:
+              0 16px 36px rgba(103, 120, 146, 0.08),
+              inset 0 1px 0 rgba(255,255,255,0.84);
+          }
+          .agent-card__top {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 16px;
+          }
+          .agent-card__repo {
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+          }
+          .agent-card h2,
+          .empty-state h2 {
+            margin: 6px 0 0;
+            font-size: 21px;
+            letter-spacing: -0.03em;
+          }
+          .status-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: var(--success-soft);
+            color: var(--success);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+          }
+          .status-pill--alert {
+            background: var(--alert-soft);
+            color: var(--alert);
+          }
+          .agent-grid {
+            margin: 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+          }
+          .agent-grid div {
+            min-width: 0;
+          }
+          dt {
+            margin: 0 0 6px;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+          }
+          dd {
+            margin: 0;
+            line-height: 1.45;
+            word-break: break-word;
+          }
+          .empty-state p {
+            margin: 8px 0 0;
+            color: var(--muted);
+          }
+          code {
+            font-family: "SF Mono", "Menlo", monospace;
+            font-size: 12px;
+          }
+        </style>
+      </head>
+      <body>
+        <header>
+          <div>
+            <h1>Conductor</h1>
+            <p class="subtitle">
+              This view reads Conductor's local SQLite state, shows active sessions, and lists idle sessions that are waiting on the user.
+            </p>
+          </div>
+          <div class="meta">
+            Last refreshed<br />
+            <strong>${refreshedLabel}</strong>
+            <code>${escapeHtml(dbPath)}</code>
+          </div>
+        </header>
+        <div class="summary">${activeAgents.length} active · ${idleAgents.length} idle · ${unreadAgents.length} unread</div>
+        ${errorBanner}
+        <section class="sections">${sections}</section>
+      </body>
+    </html>
+  `
+}
+
+function sessionSectionMarkup({
+  title,
+  description,
+  sessions,
+  pillClassName,
+  pillLabel,
+  emptyTitle,
+  emptyCopy,
+}) {
+  const cards = sessions.length
+    ? sessions.map((session) => {
+      const repo = escapeHtml(session.repo || 'Unknown repo')
+      const workspace = escapeHtml(session.workspace || 'Unknown workspace')
+      const branch = escapeHtml(session.branch || 'No branch recorded')
+      const sessionTitle = escapeHtml(session.title || 'Untitled session')
+      const model = escapeHtml(session.model || 'unknown')
+      const agentType = escapeHtml(session.agentType || 'unknown')
+      const updatedAt = escapeHtml(session.updatedAt || 'unknown')
+      const unreadCount = escapeHtml(session.unreadCount || 0)
+      const workspaceId = escapeHtml(session.workspaceId || '')
+      const sessionId = escapeHtml(session.sessionId || '')
+
+      return `
+        <article class="agent-card">
+          <div class="agent-card__top">
+            <div>
+              <div class="agent-card__repo">${repo}</div>
+              <h2>${sessionTitle}</h2>
+            </div>
+            <span class="${pillClassName}">${pillLabel}</span>
+          </div>
+          <dl class="agent-grid">
+            <div>
+              <dt>Workspace</dt>
+              <dd>${workspace}</dd>
+            </div>
+            <div>
+              <dt>Branch</dt>
+              <dd>${branch}</dd>
+            </div>
+            <div>
+              <dt>Agent</dt>
+              <dd>${agentType}</dd>
+            </div>
+            <div>
+              <dt>Model</dt>
+              <dd>${model}</dd>
+            </div>
+            <div>
+              <dt>Updated</dt>
+              <dd>${updatedAt}</dd>
+            </div>
+            <div>
+              <dt>Unread</dt>
+              <dd>${unreadCount}</dd>
+            </div>
+            <div>
+              <dt>IDs</dt>
+              <dd>${workspaceId}<br />${sessionId}</dd>
+            </div>
+          </dl>
+        </article>
+      `
+    }).join('')
+    : `
+      <div class="empty-state">
+        <h2>${emptyTitle}</h2>
+        <p>${emptyCopy}</p>
+      </div>
+    `
+
+  return `
+    <section>
+      <div class="section-heading">
+        <div>
+          <h2>${escapeHtml(title)}</h2>
+          <p>${escapeHtml(description)}</p>
+        </div>
+      </div>
+      <div class="agent-list">${cards}</div>
+    </section>
+  `
+}
+
+function escapeHtml(value) {
+  return `${value ?? ''}`
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
 function createTrayIconDataUrl() {
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
@@ -1259,6 +1850,7 @@ app.whenReady().then(() => {
   createViews()
   createTray()
   registerShortcuts()
+  startConductorRefresh()
   setActiveApp(activeApp)
   showWindow()
   showCompanion()
