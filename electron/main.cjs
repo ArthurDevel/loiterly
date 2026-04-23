@@ -83,6 +83,15 @@ const APP_CONFIGS = [
     showNavigation: false,
   },
   {
+    id: 'gmail',
+    label: 'Gmail',
+    type: 'remote',
+    partition: SHARED_REMOTE_PARTITION,
+    initialURL: 'https://mail.google.com',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
     id: 'github',
     label: 'GitHub',
     type: 'remote',
