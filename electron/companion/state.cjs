@@ -32,6 +32,10 @@ function shouldReleaseTypingSuppression(reason) {
   return reason === 'pointer'
 }
 
+function shouldAutoReleaseTypingSuppression(elapsedMs, inactivityMs) {
+  return Number(elapsedMs || 0) >= Number(inactivityMs || 0)
+}
+
 function normalizeCompanionInputEvent(value) {
   const normalized = String(value || '').trim().toLowerCase()
   if (normalized === 'keyboard' || normalized === 'pointer') {
@@ -45,6 +49,7 @@ module.exports = {
   canTriggerCompanionPing,
   isCompanionSuppressed,
   normalizeCompanionInputEvent,
+  shouldAutoReleaseTypingSuppression,
   shouldReleaseTypingSuppression,
   shouldTriggerUnreadPing,
 }
