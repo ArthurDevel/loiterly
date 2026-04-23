@@ -220,8 +220,46 @@ input {
 }
 
 .tile-icon {
-  font-size: 17px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 8px;
   color: var(--accent-strong);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.tile-icon.has-image {
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow:
+    inset 0 0 0 1px rgba(173, 184, 201, 0.22),
+    0 6px 14px rgba(116, 129, 154, 0.08);
+}
+
+.tile-icon__image {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.tile-icon__fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tile-icon.has-image .tile-icon__fallback,
+.tile-icon__fallback[hidden] {
+  display: none !important;
+}
+
+.tile-icon:not(.has-image) .tile-icon__image,
+.tile-icon__image[hidden] {
+  display: none !important;
 }
 
 .tile-badge {
