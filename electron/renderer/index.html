@@ -54,9 +54,18 @@
           </button>
         </nav>
 
-        <div class="rail-footer">
-          <div class="shortcut-label">Open / Close</div>
-          <div id="global-shortcut" class="shortcut" aria-label="Open or close with Command Shift L"></div>
+        <div class="rail-meta">
+          <div class="rail-footer">
+            <div class="shortcut-label">Open / Close</div>
+            <div id="global-shortcut" class="shortcut" aria-label="Open or close with Command Shift L"></div>
+          </div>
+
+          <section id="update-card" class="update-card no-drag" hidden>
+            <div class="update-card__eyebrow">Install latest</div>
+            <h2 id="update-title" class="update-card__title"></h2>
+            <p id="update-detail" class="update-card__detail"></p>
+            <button id="update-action" class="update-card__button" type="button"></button>
+          </section>
         </div>
       </aside>
 

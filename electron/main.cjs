@@ -1,6 +1,7 @@
 const path = require('node:path')
 const os = require('node:os')
 const { execFileSync } = require('node:child_process')
+const { autoUpdater } = require('electron-updater')
 const {
   app,
   BrowserWindow,
@@ -26,8 +27,11 @@ const COMPANION_SIZE = 24
 const COMPANION_OFFSET = { x: 10, y: -14 }
 const ACTIVE_SPACE_HOP_DELAY_MS = 140
 const CONDUCTOR_REFRESH_MS = 5000
+const RELEASE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 const CONTENT_VIEW_RADIUS = 23
 const SHARED_REMOTE_PARTITION = 'persist:loiterly-browser'
+const GITHUB_RELEASES_URL = 'https://github.com/ArthurDevel/loiterly/releases'
+const GITHUB_LATEST_RELEASE_API_URL = 'https://api.github.com/repos/ArthurDevel/loiterly/releases/latest'
 const CONDUCTOR_DB_PATH = path.join(
   os.homedir(),
   'Library',
@@ -117,8 +121,20 @@ let isCompanionEnabled = true
 let isCompanionSuppressedForTyping = false
 let companionInterval = null
 let conductorRefreshInterval = null
+let releaseCheckInterval = null
 let companionPosition = null
 let lastCursorPoint = null
+let isCheckingForUpdates = false
+let isFetchingLatestRelease = false
+let updateStatusLabel = 'Manual updates only'
+let updateErrorMessage = ''
+let downloadedUpdateVersion = null
+let latestReleaseInfo = {
+  version: '',
+  downloadURL: '',
+  releaseURL: `${GITHUB_RELEASES_URL}/latest`,
+  available: false,
+}
 let redirectingHostedAppIds = new Set()
 const linkedInStyleKeys = new WeakMap()
 const hostedAppUnreadCounts = new Map()
@@ -342,6 +358,128 @@ function createTray() {
   refreshTrayMenu()
 }
 
+function updaterSupported() {
+  return process.platform === 'darwin'
+}
+
+function updaterEnabled() {
+  return updaterSupported() && (app.isPackaged || process.env.LOITERLY_ENABLE_DEV_UPDATES === '1')
+}
+
+function setUpdateStatus(label, options = {}) {
+  updateStatusLabel = label
+
+  if (Object.prototype.hasOwnProperty.call(options, 'errorMessage')) {
+    updateErrorMessage = options.errorMessage || ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(options, 'downloadedVersion')) {
+    downloadedUpdateVersion = options.downloadedVersion || null
+  }
+
+  refreshTrayMenu()
+}
+
+function sanitizeVersion(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^[^\d]*/, '')
+    .replace(/[^\d.].*$/, '')
+}
+
+function compareVersions(left, right) {
+  const leftParts = sanitizeVersion(left).split('.').filter(Boolean).map((part) => Number.parseInt(part, 10) || 0)
+  const rightParts = sanitizeVersion(right).split('.').filter(Boolean).map((part) => Number.parseInt(part, 10) || 0)
+  const length = Math.max(leftParts.length, rightParts.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = leftParts[index] || 0
+    const rightValue = rightParts[index] || 0
+
+    if (leftValue > rightValue) {
+      return 1
+    }
+
+    if (leftValue < rightValue) {
+      return -1
+    }
+  }
+
+  return 0
+}
+
+function releaseVersionFromPayload(release) {
+  return sanitizeVersion(release?.tag_name || release?.name || '')
+}
+
+function currentUpdateOffer() {
+  if (!latestReleaseInfo.available) {
+    return null
+  }
+
+  return {
+    version: latestReleaseInfo.version,
+    downloadURL: latestReleaseInfo.downloadURL,
+    releaseURL: latestReleaseInfo.releaseURL,
+    buttonLabel: 'Install Latest',
+    summary: `Version ${latestReleaseInfo.version} is available`,
+    detail: 'Download the newest build and replace the app in Applications.',
+  }
+}
+
+function buildUpdateMenuItems() {
+  const items = [
+    {
+      label: updateStatusLabel,
+      enabled: false,
+    },
+  ]
+
+  if (updaterEnabled()) {
+    items.push({
+      label: 'Check for Updates',
+      enabled: !isCheckingForUpdates,
+      click: () => {
+        checkForAppUpdates(true)
+      },
+    })
+  } else {
+    items.push({
+      label: isFetchingLatestRelease ? 'Looking up latest release…' : 'Download Latest Release',
+      enabled: !isFetchingLatestRelease,
+      click: () => {
+        void downloadLatestRelease()
+      },
+    })
+    items.push({
+      label: 'Open Releases Page',
+      click: () => {
+        shell.openExternal(GITHUB_RELEASES_URL)
+      },
+    })
+  }
+
+  if (downloadedUpdateVersion) {
+    items.push({
+      label: `Install Update ${downloadedUpdateVersion} and Restart`,
+      click: () => {
+        installDownloadedUpdate()
+      },
+    })
+  }
+
+  if (updateErrorMessage) {
+    items.push({
+      label: 'Open Update Error',
+      click: () => {
+        dialog.showErrorBox('Loiterly update failed', updateErrorMessage)
+      },
+    })
+  }
+
+  return items
+}
+
 function refreshTrayMenu() {
   if (!tray) {
     return
@@ -373,6 +511,12 @@ function refreshTrayMenu() {
     ...appLaunchItems,
     { type: 'separator' },
     {
+      label: `Version ${app.getVersion()}`,
+      enabled: false,
+    },
+    ...buildUpdateMenuItems(),
+    { type: 'separator' },
+    {
       label: `Shortcut: ${GLOBAL_TOGGLE_SHORTCUT}`,
       enabled: false,
     },
@@ -387,6 +531,260 @@ function refreshTrayMenu() {
   ])
 
   tray.setContextMenu(menu)
+}
+
+function configureAutoUpdater() {
+  if (!updaterSupported()) {
+    setUpdateStatus('Manual updates only', {
+      errorMessage: '',
+      downloadedVersion: null,
+    })
+    return
+  }
+
+  if (!updaterEnabled()) {
+    setUpdateStatus('Manual updates only', {
+      errorMessage: '',
+      downloadedVersion: null,
+    })
+    return
+  }
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('checking-for-update', () => {
+    isCheckingForUpdates = true
+    setUpdateStatus('Checking for updates…', {
+      errorMessage: '',
+      downloadedVersion: null,
+    })
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    isCheckingForUpdates = false
+    const version = info?.version ? `v${info.version}` : 'new release'
+    setUpdateStatus(`Downloading ${version}…`, {
+      errorMessage: '',
+      downloadedVersion: null,
+    })
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    isCheckingForUpdates = false
+    setUpdateStatus(`Up to date (v${app.getVersion()})`, {
+      errorMessage: '',
+      downloadedVersion: null,
+    })
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Number.isFinite(progress?.percent) ? Math.round(progress.percent) : null
+    const suffix = percent === null ? '' : ` ${percent}%`
+    setUpdateStatus(`Downloading update…${suffix}`, {
+      errorMessage: '',
+      downloadedVersion: null,
+    })
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    isCheckingForUpdates = false
+    const version = info?.version ? `v${info.version}` : 'ready'
+    setUpdateStatus(`Update ready (${version})`, {
+      errorMessage: '',
+      downloadedVersion: version,
+    })
+  })
+
+  autoUpdater.on('error', (error) => {
+    isCheckingForUpdates = false
+    const message = error?.message || 'Unknown updater error'
+    setUpdateStatus('Update check failed', {
+      errorMessage: message,
+      downloadedVersion: null,
+    })
+  })
+
+  setUpdateStatus(`Version ${app.getVersion()}`, {
+    errorMessage: '',
+    downloadedVersion: null,
+  })
+
+  setTimeout(() => {
+    checkForAppUpdates(false)
+  }, 4000)
+}
+
+function checkForAppUpdates(manual = false) {
+  if (!updaterEnabled()) {
+    if (manual) {
+      dialog.showMessageBox({
+        type: 'info',
+        message: 'This build uses manual updates.',
+        detail: 'Use the Download Latest Release item in the tray menu to install a new DMG.',
+      }).catch(() => {})
+    }
+    return
+  }
+
+  if (isCheckingForUpdates) {
+    return
+  }
+
+  autoUpdater.checkForUpdates().catch((error) => {
+    isCheckingForUpdates = false
+    const message = error?.message || 'Unknown updater error'
+    setUpdateStatus('Update check failed', {
+      errorMessage: message,
+      downloadedVersion: null,
+    })
+    if (manual) {
+      dialog.showErrorBox('Loiterly update failed', message)
+    }
+  })
+}
+
+function installDownloadedUpdate() {
+  if (!downloadedUpdateVersion) {
+    return
+  }
+
+  isQuitting = true
+  autoUpdater.quitAndInstall()
+}
+
+function preferredReleaseAssetSuffix() {
+  if (process.platform === 'darwin') {
+    if (process.arch === 'arm64') {
+      return '-arm64.dmg'
+    }
+
+    if (process.arch === 'x64') {
+      return '-x64.dmg'
+    }
+
+    return '.dmg'
+  }
+
+  return ''
+}
+
+function chooseReleaseAsset(assets) {
+  if (!Array.isArray(assets) || assets.length === 0) {
+    return null
+  }
+
+  const preferredSuffix = preferredReleaseAssetSuffix()
+  if (preferredSuffix) {
+    const exactMatch = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith(preferredSuffix))
+    if (exactMatch) {
+      return exactMatch
+    }
+  }
+
+  const dmgMatch = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith('.dmg'))
+  if (dmgMatch) {
+    return dmgMatch
+  }
+
+  const zipMatch = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith('.zip'))
+  if (zipMatch) {
+    return zipMatch
+  }
+
+  return null
+}
+
+async function fetchLatestReleaseInfo() {
+  if (typeof fetch !== 'function') {
+    throw new Error('This Electron runtime does not support fetch in the main process.')
+  }
+
+  const response = await fetch(GITHUB_LATEST_RELEASE_API_URL, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`GitHub release lookup failed with HTTP ${response.status}.`)
+  }
+
+  const release = await response.json()
+  const asset = chooseReleaseAsset(release?.assets)
+  const version = releaseVersionFromPayload(release)
+  const releaseURL = release?.html_url || `${GITHUB_RELEASES_URL}/latest`
+
+  latestReleaseInfo = {
+    version,
+    downloadURL: asset?.browser_download_url || releaseURL,
+    releaseURL,
+    available: Boolean(version) && compareVersions(version, app.getVersion()) > 0,
+  }
+
+  emitState()
+  return latestReleaseInfo
+}
+
+async function refreshLatestReleaseInfo() {
+  if (isFetchingLatestRelease) {
+    return latestReleaseInfo
+  }
+
+  isFetchingLatestRelease = true
+  refreshTrayMenu()
+
+  try {
+    const release = await fetchLatestReleaseInfo()
+
+    if (!updaterEnabled()) {
+      setUpdateStatus(
+        release.available ? `Update available (${release.version})` : 'Manual updates only',
+        {
+          errorMessage: '',
+          downloadedVersion: null,
+        }
+      )
+    }
+
+    return release
+  } catch {
+    return latestReleaseInfo
+  } finally {
+    isFetchingLatestRelease = false
+    refreshTrayMenu()
+  }
+}
+
+async function downloadLatestRelease() {
+  if (isFetchingLatestRelease) {
+    return
+  }
+
+  isFetchingLatestRelease = true
+  refreshTrayMenu()
+
+  try {
+    const release = await fetchLatestReleaseInfo()
+    const targetURL = release.downloadURL || release.releaseURL || `${GITHUB_RELEASES_URL}/latest`
+
+    if (!targetURL) {
+      throw new Error('No downloadable release asset was found.')
+    }
+
+    await shell.openExternal(targetURL)
+  } catch (error) {
+    const message = error?.message || 'Failed to find the latest release.'
+    dialog.showMessageBox({
+      type: 'error',
+      message: 'Unable to download the latest release',
+      detail: `${message}\n\nOpening the releases page instead.`,
+    }).catch(() => {})
+    shell.openExternal(`${GITHUB_RELEASES_URL}/latest`)
+  } finally {
+    isFetchingLatestRelease = false
+    refreshTrayMenu()
+  }
 }
 
 function createViews() {
@@ -1326,6 +1724,7 @@ function emitState() {
     activeApp,
     apps: allAppStates(conductorSnapshot),
     globalShortcut: GLOBAL_TOGGLE_SHORTCUT,
+    updateOffer: currentUpdateOffer(),
   })
 
   updateCompanionUnreadBadge(conductorSnapshot)
@@ -1368,6 +1767,17 @@ function startConductorRefresh() {
       refreshLocalAppView('conductor')
     }
   }, CONDUCTOR_REFRESH_MS)
+}
+
+function startReleaseChecks() {
+  if (releaseCheckInterval) {
+    return
+  }
+
+  void refreshLatestReleaseInfo()
+  releaseCheckInterval = setInterval(() => {
+    void refreshLatestReleaseInfo()
+  }, RELEASE_CHECK_INTERVAL_MS)
 }
 
 function clampWindowOrigin(point) {
@@ -2124,6 +2534,7 @@ ipcMain.handle('shell:get-state', async () => ({
   activeApp,
   apps: allAppStates(),
   globalShortcut: GLOBAL_TOGGLE_SHORTCUT,
+  updateOffer: currentUpdateOffer(),
 }))
 
 ipcMain.on('shell:set-active-app', (_event, appId) => {
@@ -2197,8 +2608,10 @@ app.whenReady().then(() => {
   companionWindow = createCompanionWindow()
   createViews()
   createTray()
+  configureAutoUpdater()
   registerShortcuts()
   startConductorRefresh()
+  startReleaseChecks()
   setActiveApp(activeApp)
   showWindow()
   showCompanion()

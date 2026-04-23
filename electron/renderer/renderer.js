@@ -31,6 +31,7 @@ const state = {
     conductor: createAppState('conductor', 'Conductor'),
   },
   globalShortcut: 'CommandOrControl+Shift+L',
+  updateOffer: null,
 }
 
 const elements = {
@@ -48,6 +49,10 @@ const elements = {
   reload: document.getElementById('reload'),
   hideWindow: document.getElementById('hide-window'),
   globalShortcut: document.getElementById('global-shortcut'),
+  updateCard: document.getElementById('update-card'),
+  updateTitle: document.getElementById('update-title'),
+  updateDetail: document.getElementById('update-detail'),
+  updateAction: document.getElementById('update-action'),
   main: document.querySelector('.main'),
   toolbar: document.querySelector('.toolbar'),
 }
@@ -129,6 +134,18 @@ function render() {
       return key
     })
   )
+
+  if (state.updateOffer?.downloadURL || state.updateOffer?.releaseURL) {
+    elements.updateCard.hidden = false
+    elements.updateTitle.textContent = state.updateOffer.summary || 'A new version is available'
+    elements.updateDetail.textContent = state.updateOffer.detail || ''
+    elements.updateAction.textContent = state.updateOffer.buttonLabel || 'Install Latest'
+  } else {
+    elements.updateCard.hidden = true
+    elements.updateTitle.textContent = ''
+    elements.updateDetail.textContent = ''
+    elements.updateAction.textContent = ''
+  }
 }
 
 function publishBounds() {
@@ -156,6 +173,10 @@ function setState(nextState) {
     state.globalShortcut = nextState.globalShortcut
   }
 
+  if (Object.prototype.hasOwnProperty.call(nextState, 'updateOffer')) {
+    state.updateOffer = nextState.updateOffer || null
+  }
+
   render()
 }
 
@@ -177,6 +198,14 @@ elements.goBack.addEventListener('click', () => shell.goBack())
 elements.goForward.addEventListener('click', () => shell.goForward())
 elements.reload.addEventListener('click', () => shell.reload())
 elements.hideWindow.addEventListener('click', () => shell.toggleWindow())
+elements.updateAction.addEventListener('click', () => {
+  const targetURL = state.updateOffer?.downloadURL || state.updateOffer?.releaseURL
+  if (!targetURL) {
+    return
+  }
+
+  shell.openExternal(targetURL)
+})
 
 shell.onState((nextState) => {
   setState(nextState)
