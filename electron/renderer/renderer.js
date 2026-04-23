@@ -28,6 +28,7 @@ const state = {
     linkedin: createAppState('linkedin', 'LinkedIn'),
     instagram: createAppState('instagram', 'Instagram'),
     twitter: createAppState('twitter', 'Twitter'),
+    prompts: createAppState('prompts', 'Prompts'),
     links: createAppState('links', 'Links'),
     conductor: createAppState('conductor', 'Conductor'),
   },
