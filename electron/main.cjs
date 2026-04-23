@@ -83,6 +83,7 @@ const APP_CONFIGS = [
     id: 'notion',
     label: 'Notion',
     type: 'remote',
+    iconPath: '../assets/app-icons/notion.ico',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://www.notion.so',
     showAddressBar: false,
@@ -92,6 +93,7 @@ const APP_CONFIGS = [
     id: 'gmail',
     label: 'Gmail',
     type: 'remote',
+    iconPath: '../assets/app-icons/gmail.ico',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://mail.google.com',
     showAddressBar: false,
@@ -101,6 +103,7 @@ const APP_CONFIGS = [
     id: 'github',
     label: 'GitHub',
     type: 'remote',
+    iconPath: '../assets/app-icons/github.svg',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://github.com',
     showAddressBar: false,
@@ -110,6 +113,7 @@ const APP_CONFIGS = [
     id: 'github-issues',
     label: 'Issues',
     type: 'remote',
+    iconPath: '../assets/app-icons/github.svg',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: `https://github.com/${GITHUB_ISSUES_OWNER}/${GITHUB_ISSUES_DEFAULT_REPO}/issues`,
     showAddressBar: false,
@@ -119,6 +123,7 @@ const APP_CONFIGS = [
     id: 'linkedin',
     label: 'LinkedIn',
     type: 'remote',
+    iconPath: '../assets/app-icons/linkedin.ico',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://www.linkedin.com/messaging/',
     showAddressBar: false,
@@ -128,6 +133,7 @@ const APP_CONFIGS = [
     id: 'instagram',
     label: 'Instagram',
     type: 'remote',
+    iconPath: '../assets/app-icons/instagram.ico',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://www.instagram.com',
     showAddressBar: false,
@@ -137,6 +143,7 @@ const APP_CONFIGS = [
     id: 'openpaperdigest',
     label: 'Open Paper Digest',
     type: 'remote',
+    iconPath: '../assets/app-icons/openpaperdigest.svg',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://www.openpaperdigest.com',
     showAddressBar: false,
@@ -146,6 +153,7 @@ const APP_CONFIGS = [
     id: 'twitter',
     label: 'Twitter',
     type: 'remote',
+    iconPath: '../assets/app-icons/x.svg',
     partition: SHARED_REMOTE_PARTITION,
     initialURL: 'https://x.com',
     showAddressBar: false,
@@ -916,7 +924,6 @@ function createHostedAppView(appConfig) {
     emitState()
   })
   contents.on('page-title-updated', emitState)
-  contents.on('page-favicon-updated', emitState)
   contents.on('did-finish-load', () => {
     enforceHostedAppLocation(appConfig, contents)
     syncHostedAppStyles(appConfig, contents)
@@ -1974,7 +1981,7 @@ function defaultAppState(appId) {
     id: appId,
     title: appConfig ? appConfig.label : 'Loiterly',
     url: appConfig && appConfig.showAddressBar ? appConfig.initialURL || '' : '',
-    unreadCount: hostedAppUnreadCounts.get(appId) || 0,
+    iconURL: appConfig?.iconPath || '',
     canGoBack: false,
     canGoForward: false,
     isLoading: false,
@@ -2017,6 +2024,7 @@ function appState(appId, conductorSnapshot = null) {
     id: appId,
     url: appConfig && appConfig.showAddressBar ? (contents.getURL() || appConfig.initialURL || '') : '',
     title: contents.getTitle() || (appConfig ? appConfig.label : 'Loiterly'),
+    iconURL: appConfig?.iconPath || '',
     unreadCount: hostedAppUnreadCounts.get(appId) || 0,
     canGoBack: isRemoteApp && navigationHistory ? navigationHistory.canGoBack() : false,
     canGoForward: isRemoteApp && navigationHistory ? navigationHistory.canGoForward() : false,
