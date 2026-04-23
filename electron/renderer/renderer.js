@@ -29,6 +29,7 @@ const state = {
     instagram: createAppState('instagram', 'Instagram'),
     openpaperdigest: createAppState('openpaperdigest', 'Open Paper Digest'),
     twitter: createAppState('twitter', 'Twitter'),
+    prompts: createAppState('prompts', 'Prompts'),
     links: createAppState('links', 'Links'),
     conductor: createAppState('conductor', 'Conductor'),
   },
