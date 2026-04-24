@@ -36,6 +36,8 @@ const POPUP_MARGIN = 48
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const GLOBAL_TOGGLE_SHORTCUT = 'CommandOrControl+Shift+L'
+const GLOBAL_TOGGLE_SHORTCUT_LABEL = IS_MAC ? '(cmd + shift + l)' : '(ctrl + shift + l)'
+const LOGIN_ITEM_LAUNCH_ARG = '--loiterly-login-start'
 const COMPANION_SIZE = 24
 const COMPANION_OFFSET = { x: 10, y: -14 }
 const ACTIVE_SPACE_HOP_DELAY_MS = 140
@@ -240,6 +242,14 @@ const hostedAppHomeURLs = new Map()
 const loadedHostedAppIds = new Set()
 const localAppSignatures = new Map()
 const localAppScrollPositions = new Map()
+const localAppAccessGateIds = new Set(['prompts', 'conductor'])
+const localAppAccessStates = new Map(
+  Array.from(localAppAccessGateIds, (appId) => [appId, {
+    granted: !IS_MAC,
+    requested: !IS_MAC,
+    lastError: '',
+  }])
+)
 const popupWindows = new Set()
 const configuredPermissionPartitions = new Set()
 let githubIssuesReposState = {
@@ -263,6 +273,93 @@ const originalConsole = {
   info: console.info.bind(console),
   warn: console.warn.bind(console),
   error: console.error.bind(console),
+}
+
+function launchAtLoginSupported() {
+  return (IS_MAC || IS_WINDOWS) && app.isPackaged
+}
+
+function launchAtLoginPreferencePath() {
+  return path.join(app.getPath('userData'), 'launch-at-login.json')
+}
+
+function readLaunchAtLoginPreference() {
+  if (!launchAtLoginSupported()) {
+    return null
+  }
+
+  const preferencePath = launchAtLoginPreferencePath()
+  if (!fs.existsSync(preferencePath)) {
+    return null
+  }
+
+  try {
+    const payload = JSON.parse(fs.readFileSync(preferencePath, 'utf8'))
+    return typeof payload?.enabled === 'boolean' ? payload.enabled : null
+  } catch {
+    return null
+  }
+}
+
+function writeLaunchAtLoginPreference(enabled) {
+  if (!launchAtLoginSupported()) {
+    return
+  }
+
+  const preferencePath = launchAtLoginPreferencePath()
+  fs.mkdirSync(path.dirname(preferencePath), { recursive: true })
+  fs.writeFileSync(preferencePath, JSON.stringify({ enabled: Boolean(enabled) }, null, 2))
+}
+
+function currentLaunchAtLoginEnabled() {
+  if (!launchAtLoginSupported()) {
+    return false
+  }
+
+  return Boolean(app.getLoginItemSettings().openAtLogin)
+}
+
+function setLaunchAtLoginEnabled(enabled, options = {}) {
+  const shouldPersist = options.persist !== false
+  if (!launchAtLoginSupported()) {
+    return false
+  }
+
+  const nextEnabled = Boolean(enabled)
+  app.setLoginItemSettings({
+    openAtLogin: nextEnabled,
+    openAsHidden: true,
+    args: nextEnabled ? [LOGIN_ITEM_LAUNCH_ARG] : [],
+  })
+
+  if (shouldPersist) {
+    writeLaunchAtLoginPreference(nextEnabled)
+  }
+
+  refreshTrayMenu()
+  return currentLaunchAtLoginEnabled()
+}
+
+function initializeLaunchAtLoginPreference() {
+  if (!launchAtLoginSupported()) {
+    return
+  }
+
+  const savedPreference = readLaunchAtLoginPreference()
+  if (typeof savedPreference === 'boolean') {
+    setLaunchAtLoginEnabled(savedPreference, { persist: false })
+    return
+  }
+
+  setLaunchAtLoginEnabled(true)
+}
+
+function toggleLaunchAtLogin() {
+  setLaunchAtLoginEnabled(!currentLaunchAtLoginEnabled())
+}
+
+function shouldStartHiddenAtLaunch() {
+  return process.argv.includes(LOGIN_ITEM_LAUNCH_ARG)
 }
 
 function resolveLogDirPath() {
@@ -924,9 +1021,11 @@ function refreshTrayMenu() {
     return
   }
 
+  const loiterlyVisibilityLabel = mainWindow && mainWindow.isVisible() ? 'Hide Loiterly' : 'Show Loiterly'
+  const canToggleLaunchAtLogin = launchAtLoginSupported()
   const menu = Menu.buildFromTemplate([
     {
-      label: mainWindow && mainWindow.isVisible() ? 'Hide Loiterly' : 'Show Loiterly',
+      label: `${loiterlyVisibilityLabel} ${GLOBAL_TOGGLE_SHORTCUT_LABEL}`,
       click: () => toggleWindowVisibility(),
     },
     {
@@ -937,17 +1036,21 @@ function refreshTrayMenu() {
         toggleCompanion()
       },
     },
+    {
+      label: 'Launch at Login',
+      type: 'checkbox',
+      checked: currentLaunchAtLoginEnabled(),
+      enabled: canToggleLaunchAtLogin,
+      click: () => {
+        toggleLaunchAtLogin()
+      },
+    },
     { type: 'separator' },
     {
       label: `Version ${app.getVersion()}`,
       enabled: false,
     },
     ...buildUpdateMenuItems(),
-    { type: 'separator' },
-    {
-      label: `Shortcut: ${GLOBAL_TOGGLE_SHORTCUT}`,
-      enabled: false,
-    },
     { type: 'separator' },
     {
       label: 'Quit',
@@ -2192,6 +2295,283 @@ function createLocalAppView(appConfig) {
   return view
 }
 
+function shouldGateLocalAppAccess(appId) {
+  return IS_MAC && localAppAccessGateIds.has(appId)
+}
+
+function localAppAccessState(appId) {
+  if (!shouldGateLocalAppAccess(appId)) {
+    return {
+      granted: true,
+      requested: true,
+      lastError: '',
+    }
+  }
+
+  return localAppAccessStates.get(appId) || {
+    granted: false,
+    requested: false,
+    lastError: '',
+  }
+}
+
+function setLocalAppAccessState(appId, nextState) {
+  if (!shouldGateLocalAppAccess(appId)) {
+    return localAppAccessState(appId)
+  }
+
+  const currentState = localAppAccessState(appId)
+  const resolvedState = {
+    ...currentState,
+    ...nextState,
+  }
+  localAppAccessStates.set(appId, resolvedState)
+  return resolvedState
+}
+
+function findPermissionError(messages) {
+  if (!Array.isArray(messages)) {
+    return ''
+  }
+
+  const match = messages.find((message) => /\b(EACCES|EPERM)\b|permission denied|operation not permitted/i.test(`${message || ''}`))
+  return match ? `${match}` : ''
+}
+
+function requestLocalAppAccess(appId) {
+  const currentState = localAppAccessState(appId)
+  if (!shouldGateLocalAppAccess(appId)) {
+    return currentState
+  }
+
+  let nextState = {
+    granted: true,
+    requested: true,
+    lastError: '',
+  }
+
+  if (appId === 'prompts') {
+    const snapshot = loadPromptLibrarySnapshot()
+    const permissionError = findPermissionError(snapshot.sources.map((source) => source.error).filter(Boolean))
+    if (permissionError) {
+      nextState = {
+        granted: false,
+        requested: true,
+        lastError: permissionError,
+      }
+    }
+  } else if (appId === 'conductor') {
+    const snapshot = loadConductorSnapshot()
+    const permissionError = findPermissionError(snapshot.errors)
+    if (permissionError) {
+      nextState = {
+        granted: false,
+        requested: true,
+        lastError: permissionError,
+      }
+    }
+  }
+
+  return setLocalAppAccessState(appId, nextState)
+}
+
+function maybeLoadConductorSnapshot() {
+  return localAppAccessState('conductor').granted ? loadConductorSnapshot() : null
+}
+
+function localAppAccessMarkup(appId, accessState) {
+  const appConfig = {
+    prompts: {
+      title: 'Prompts',
+      description: 'Loiterly can browse your local prompt folders after you explicitly allow it.',
+      details: 'This view reads from ~/.codex/prompts, ~/.claude/commands, and ~/.claude/agents.',
+      caution: 'macOS may ask for folder access the first time this runs, especially if those folders or linked files live inside protected locations.',
+      buttonLabel: 'Continue and Request Access',
+    },
+    conductor: {
+      title: 'Agents',
+      description: 'Loiterly can inspect local Conductor and Claude session data after you explicitly allow it.',
+      details: 'This view reads Conductor state, Claude CLI logs, and may inspect workspace git metadata to label sessions.',
+      caution: 'macOS may ask for Documents access here if your workspaces live in protected folders like Documents or Desktop.',
+      buttonLabel: 'Continue and Request Access',
+    },
+  }[appId]
+
+  if (!appConfig) {
+    return ''
+  }
+
+  const errorMessage = accessState.requested && accessState.lastError
+    ? `
+      <div class="access-card__status access-card__status--error">
+        ${escapeHtml(accessState.lastError)}
+      </div>
+    `
+    : (
+      accessState.requested
+        ? `
+      <div class="access-card__status">
+        Access still is not available. After allowing it in the macOS dialog, click the button again.
+      </div>
+    `
+        : ''
+    )
+
+  return `
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>${escapeHtml(appConfig.title)}</title>
+        <style>
+          :root {
+            color-scheme: light;
+            --bg: #edf2f7;
+            --panel: rgba(255, 255, 255, 0.82);
+            --panel-strong: rgba(255, 255, 255, 0.94);
+            --border: rgba(147, 163, 184, 0.24);
+            --text: #172030;
+            --muted: #617086;
+            --accent: #2e68db;
+            --accent-strong: #1f53b8;
+            --accent-soft: rgba(74, 132, 245, 0.12);
+            --danger: #d84c4c;
+            --danger-soft: rgba(216, 76, 76, 0.12);
+          }
+          * {
+            box-sizing: border-box;
+          }
+          body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 28px;
+            background:
+              radial-gradient(circle at top left, rgba(255,255,255,0.86), rgba(255,255,255,0) 34%),
+              linear-gradient(180deg, #fbfcfe 0%, var(--bg) 100%);
+            color: var(--text);
+            font-family: "SF Pro Display", "Helvetica Neue", sans-serif;
+          }
+          .access-card {
+            width: min(720px, 100%);
+            padding: 28px;
+            border-radius: 28px;
+            background: linear-gradient(180deg, var(--panel-strong), var(--panel));
+            border: 1px solid var(--border);
+            box-shadow:
+              0 18px 44px rgba(103, 120, 146, 0.12),
+              inset 0 1px 0 rgba(255,255,255,0.8);
+          }
+          .access-card__eyebrow {
+            display: inline-flex;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+          }
+          h1 {
+            margin: 16px 0 10px;
+            font-size: 32px;
+            letter-spacing: -0.04em;
+          }
+          p {
+            margin: 0;
+            color: var(--muted);
+            line-height: 1.55;
+          }
+          .access-card__details {
+            margin-top: 18px;
+            padding: 18px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.6);
+            border: 1px solid rgba(147, 163, 184, 0.18);
+          }
+          .access-card__details strong {
+            display: block;
+            margin-bottom: 6px;
+            color: var(--text);
+          }
+          .access-card__status {
+            margin-top: 18px;
+            padding: 14px 16px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(147, 163, 184, 0.18);
+            color: var(--muted);
+          }
+          .access-card__status--error {
+            background: var(--danger-soft);
+            border-color: rgba(216, 76, 76, 0.18);
+            color: var(--danger);
+          }
+          .access-card__actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 22px;
+          }
+          button {
+            border: 0;
+            border-radius: 14px;
+            padding: 12px 18px;
+            background: var(--accent);
+            color: white;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+          }
+          button:hover {
+            background: var(--accent-strong);
+          }
+          button[disabled] {
+            opacity: 0.7;
+            cursor: wait;
+          }
+          code {
+            font-family: "SF Mono", "Menlo", monospace;
+            font-size: 12px;
+          }
+        </style>
+      </head>
+      <body>
+        <main class="access-card">
+          <div class="access-card__eyebrow">Local Access</div>
+          <h1>${escapeHtml(appConfig.title)}</h1>
+          <p>${escapeHtml(appConfig.description)}</p>
+          <div class="access-card__details">
+            <strong>Why this needs permission</strong>
+            <p>${escapeHtml(appConfig.details)}</p>
+            <p style="margin-top: 10px;">${escapeHtml(appConfig.caution)}</p>
+          </div>
+          ${errorMessage}
+          <div class="access-card__actions">
+            <button id="request-access" type="button">${escapeHtml(appConfig.buttonLabel)}</button>
+          </div>
+        </main>
+        <script>
+          const requestButton = document.getElementById('request-access')
+          requestButton.addEventListener('click', async () => {
+            requestButton.disabled = true
+            requestButton.textContent = 'Requesting Access...'
+            try {
+              await window.loiterlyLocalApp.requestAccess(${JSON.stringify(appId)})
+            } finally {
+              requestButton.disabled = false
+              requestButton.textContent = ${JSON.stringify(appConfig.buttonLabel)}
+            }
+          })
+        </script>
+      </body>
+    </html>
+  `
+}
+
 function refreshLocalAppView(appId, existingView = null) {
   const view = existingView || views.get(appId)
   if (!view || view.webContents.isDestroyed()) {
@@ -2203,13 +2583,25 @@ function refreshLocalAppView(appId, existingView = null) {
   if (appId === 'links') {
     html = linksMarkup()
   } else if (appId === 'prompts') {
-    const snapshot = loadPromptLibrarySnapshot()
-    html = promptsMarkup(snapshot)
-    signature = snapshot.signature
+    const accessState = localAppAccessState(appId)
+    if (!accessState.granted) {
+      html = localAppAccessMarkup(appId, accessState)
+      signature = JSON.stringify({ appId, accessState })
+    } else {
+      const snapshot = loadPromptLibrarySnapshot()
+      html = promptsMarkup(snapshot)
+      signature = snapshot.signature
+    }
   } else if (appId === 'conductor') {
-    const snapshot = loadConductorSnapshot()
-    html = conductorMarkup(snapshot)
-    signature = snapshot.signature
+    const accessState = localAppAccessState(appId)
+    if (!accessState.granted) {
+      html = localAppAccessMarkup(appId, accessState)
+      signature = JSON.stringify({ appId, accessState })
+    } else {
+      const snapshot = loadConductorSnapshot()
+      html = conductorMarkup(snapshot)
+      signature = snapshot.signature
+    }
   }
 
   if (!html) {
@@ -2426,6 +2818,13 @@ function defaultAppState(appId) {
 
 function appState(appId, conductorSnapshot = null) {
   if (appId === 'conductor') {
+    if (!localAppAccessState('conductor').granted) {
+      return {
+        ...defaultAppState(appId),
+        title: 'Agents',
+      }
+    }
+
     const snapshot = conductorSnapshot || loadConductorSnapshot()
 
     return {
@@ -2467,7 +2866,7 @@ function appState(appId, conductorSnapshot = null) {
 
 function allAppStates(conductorSnapshot = null) {
   const state = {}
-  const snapshot = conductorSnapshot || loadConductorSnapshot()
+  const snapshot = conductorSnapshot || maybeLoadConductorSnapshot()
 
   for (const appConfig of APP_CONFIGS) {
     state[appConfig.id] = appState(appConfig.id, snapshot)
@@ -2481,7 +2880,7 @@ function emitState() {
     return
   }
 
-  const conductorSnapshot = loadConductorSnapshot()
+  const conductorSnapshot = maybeLoadConductorSnapshot()
 
   mainWindow.webContents.send('shell:state', {
     activeApp,
@@ -2500,7 +2899,22 @@ function updateCompanionUnreadBadge(conductorSnapshot = null) {
     return
   }
 
-  const snapshot = conductorSnapshot || loadConductorSnapshot()
+  const snapshot = conductorSnapshot || maybeLoadConductorSnapshot()
+  if (!snapshot) {
+    companionWindow.webContents.executeJavaScript(
+      `
+        (() => {
+          const badge = document.querySelector('.companion-badge')
+          if (!badge) return
+          badge.hidden = true
+        })()
+      `,
+      true
+    ).catch(() => {})
+    lastCompanionUnreadCount = 0
+    return
+  }
+
   const unreadCount = snapshot.unreadAgents.reduce((total, session) => (
     total + Math.max(0, Number(session?.unreadCount || 0))
   ), 0)
@@ -4985,7 +5399,7 @@ function isPromptPathAllowed(targetPath) {
 
 ipcMain.handle('shell:get-state', async () => ({
   activeApp,
-  apps: allAppStates(),
+  apps: allAppStates(maybeLoadConductorSnapshot()),
   githubIssues: githubIssuesShellState(),
   globalShortcut: GLOBAL_TOGGLE_SHORTCUT,
   updateOffer: currentUpdateOffer(),
@@ -5067,6 +5481,27 @@ ipcMain.on('local-app:refresh', (_event, appId) => {
   emitState()
 })
 
+ipcMain.handle('local-app:request-access', async (_event, appId) => {
+  if (!appId || typeof appId !== 'string') {
+    return {
+      granted: false,
+      requested: false,
+      lastError: 'Invalid local app access request.',
+    }
+  }
+
+  const appConfig = apps.get(appId)
+  if (!appConfig || appConfig.type !== 'local') {
+    return localAppAccessState(appId)
+  }
+
+  const nextState = requestLocalAppAccess(appId)
+  localAppSignatures.delete(appId)
+  refreshLocalAppView(appId)
+  emitState()
+  return nextState
+})
+
 ipcMain.on('local-app:reveal-path', (_event, targetPath) => {
   if (!isPromptPathAllowed(targetPath)) {
     return
@@ -5110,6 +5545,8 @@ app.whenReady().then(() => {
     app.dock.hide()
   }
 
+  initializeLaunchAtLoginPreference()
+
   mainWindow = createShellWindow()
   backdropWindow = createBackdropWindow()
   companionWindow = createCompanionWindow()
@@ -5121,8 +5558,13 @@ app.whenReady().then(() => {
   startReleaseChecks()
   void refreshGitHubIssuesRepos()
   setActiveApp(activeApp)
-  showWindow()
-  showCompanion()
+
+  if (shouldStartHiddenAtLaunch()) {
+    hideWindow()
+  } else {
+    showWindow()
+    showCompanion()
+  }
 })
 
 app.on('will-quit', () => {

@@ -10,6 +10,8 @@
     "test": "node --test",
     "build:app-icon": "bash scripts/build-app-icon.sh",
     "download:icons": "bash scripts/download-app-icons.sh",
+    "install:mac": "bash scripts/install-mac-app.sh",
+    "install:mac:no-open": "bash scripts/install-mac-app.sh --no-open",
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "release:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish always",
     "dist:win": "electron-builder --win nsis --publish never",
