@@ -7,9 +7,12 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
+    "build:win-helper": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-helper.ps1",
     "download:icons": "bash scripts/download-app-icons.sh",
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
-    "release:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish always"
+    "release:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish always",
+    "dist:win": "npm run build:win-helper && electron-builder --win nsis --publish never",
+    "release:win": "npm run build:win-helper && electron-builder --win nsis --publish always"
   },
   "dependencies": {
     "electron-updater": "^6.6.2"
@@ -31,6 +34,15 @@
       "electron/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "electron/native/bin",
+        "to": "native/bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "directories": {
       "output": "dist"
     },
@@ -43,6 +55,12 @@
         "zip"
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "publish": [
       {
