@@ -9,6 +9,7 @@
     "start": "electron .",
     "test": "node --test",
     "build:win-helper": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-helper.ps1",
+    "build:app-icon": "bash scripts/build-app-icon.sh",
     "download:icons": "bash scripts/download-app-icons.sh",
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "release:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish always",
@@ -49,6 +50,7 @@
     },
     "afterPack": "electron/after-pack.cjs",
     "mac": {
+      "icon": "electron/assets/loiterly.icns",
       "category": "public.app-category.productivity",
       "identity": null,
       "target": [
@@ -58,6 +60,7 @@
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "win": {
+      "icon": "electron/assets/loiterly.ico",
       "target": [
         "nsis"
       ],
