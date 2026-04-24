@@ -133,7 +133,7 @@ const APP_CONFIGS = [
   },
   {
     id: 'github-issues',
-    label: 'Issues',
+    label: 'GitHub Issues',
     type: 'remote',
     iconPath: '../assets/app-icons/github.svg',
     partition: SHARED_REMOTE_PARTITION,
@@ -173,7 +173,7 @@ const APP_CONFIGS = [
   },
   {
     id: 'twitter',
-    label: 'Twitter',
+    label: 'X',
     type: 'remote',
     iconPath: '../assets/app-icons/x.svg',
     partition: SHARED_REMOTE_PARTITION,
