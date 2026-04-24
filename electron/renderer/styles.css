@@ -44,7 +44,7 @@ input {
 .shell {
   position: relative;
   display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
+  grid-template-columns: 138px minmax(0, 1fr);
   height: calc(100vh - 36px);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(248, 250, 253, 0.66)),
@@ -89,6 +89,7 @@ input {
   flex-direction: column;
   gap: 18px;
   min-height: 0;
+  min-width: 0;
   padding: 18px 14px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(248, 250, 252, 0.34));
   border-right: 1px solid rgba(147, 163, 184, 0.18);
@@ -138,10 +139,13 @@ input {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
+  align-items: stretch;
   gap: 10px;
   min-height: 0;
+  min-width: 0;
+  overflow-x: clip;
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: 2px;
   scrollbar-gutter: stable;
   scrollbar-width: none;
 }
@@ -182,19 +186,29 @@ input {
 
 .tile {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  display: grid;
+  justify-items: center;
+  align-content: start;
   gap: 8px;
-  padding: 14px 12px;
-  min-height: 86px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 8px 13px;
+  min-height: 92px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
   border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0);
-  background: rgba(255, 255, 255, 0.26);
+  border: 1px solid rgba(147, 163, 184, 0.28);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(248, 250, 253, 0.7)),
+    rgba(255, 255, 255, 0.38);
   color: var(--muted);
   cursor: pointer;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 10px 22px rgba(116, 129, 154, 0.06);
   transition:
     transform 120ms ease,
     border-color 120ms ease,
@@ -205,46 +219,53 @@ input {
 
 .tile:hover {
   transform: translateY(-1px);
-  background: rgba(255, 255, 255, 0.58);
-  border-color: rgba(173, 184, 201, 0.28);
-  box-shadow: 0 10px 24px rgba(116, 129, 154, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(248, 250, 253, 0.82)),
+    rgba(255, 255, 255, 0.46);
+  border-color: rgba(123, 141, 167, 0.36);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 14px 28px rgba(116, 129, 154, 0.1);
 }
 
 .tile.is-active {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 253, 0.9)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 253, 0.94)),
     var(--panel-strong);
-  border-color: rgba(123, 141, 167, 0.22);
+  border-color: rgba(123, 141, 167, 0.42);
   box-shadow:
-    0 16px 32px rgba(116, 129, 154, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    0 18px 34px rgba(116, 129, 154, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
   color: var(--text);
 }
 
 .tile-icon {
-  width: 24px;
-  height: 24px;
+  width: 38px;
+  height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  border-radius: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(173, 184, 201, 0.34);
+  background: rgba(255, 255, 255, 0.88);
   color: var(--accent-strong);
   font-size: 17px;
   font-weight: 600;
   line-height: 1;
-}
-
-.tile-icon.has-image {
-  background: rgba(255, 255, 255, 0.78);
   box-shadow:
-    inset 0 0 0 1px rgba(173, 184, 201, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
     0 6px 14px rgba(116, 129, 154, 0.08);
 }
 
+.tile-icon.has-image {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: rgba(147, 163, 184, 0.38);
+}
+
 .tile-icon__image {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   object-fit: contain;
 }
 
@@ -252,6 +273,20 @@ input {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.tile-label {
+  display: -webkit-box;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  color: inherit;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .tile-icon.has-image .tile-icon__fallback,
