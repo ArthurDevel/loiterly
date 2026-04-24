@@ -14,6 +14,7 @@ download_icon() {
 }
 
 download_icon "https://www.notion.so/front-static/favicon.ico" "notion.ico"
+download_icon "https://www.siliconmania.tv/favicon.ico" "siliconmania.ico"
 download_icon "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico" "gmail.ico"
 download_icon "https://github.githubassets.com/favicons/favicon.svg" "github.svg"
 download_icon "https://static.licdn.com/aero-v1/sc/h/al2o9zrvru7aqj8e1x2rzsrca" "linkedin.ico"

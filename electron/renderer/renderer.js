@@ -24,6 +24,7 @@ const state = {
       showNavigation: true,
     }),
     notion: createAppState('notion', 'Notion'),
+    siliconmania: createAppState('siliconmania', 'Silicon Mania'),
     gmail: createAppState('gmail', 'Gmail'),
     github: createAppState('github', 'GitHub'),
     'github-issues': createAppState('github-issues', 'Issues'),
