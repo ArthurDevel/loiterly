@@ -102,6 +102,16 @@ const APP_CONFIGS = [
     showNavigation: false,
   },
   {
+    id: 'siliconmania',
+    label: 'Silicon Mania',
+    type: 'remote',
+    iconPath: '../assets/app-icons/siliconmania.ico',
+    partition: SHARED_REMOTE_PARTITION,
+    initialURL: 'https://www.siliconmania.tv/weekly',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
     id: 'gmail',
     label: 'Gmail',
     type: 'remote',
@@ -245,6 +255,7 @@ let companionInputMonitorProcess = null
 let companionTypingReleaseTimeout = null
 let mainLogStream = null
 let isConsoleLoggingInstalled = false
+let isReportingLoggerFailure = false
 let isCompanionInputMonitorUnavailable = false
 let sqliteModuleLoadAttempted = false
 let sqliteDatabaseSync = null
@@ -467,6 +478,43 @@ function formatLogValue(value) {
   })
 }
 
+function createMainLogLine(level, args) {
+  return `${new Date().toISOString()} [${level}] ${args.map(formatLogValue).join(' ')}\n`
+}
+
+function appendMainLogLineSync(line) {
+  fs.mkdirSync(LOG_DIR_PATH, { recursive: true })
+  fs.appendFileSync(MAIN_LOG_PATH, line, 'utf8')
+}
+
+function reportLoggerFailure(message, error) {
+  if (isReportingLoggerFailure) {
+    return
+  }
+
+  isReportingLoggerFailure = true
+
+  try {
+    appendMainLogLineSync(createMainLogLine('LOGGER', [message, error]))
+  } catch {}
+
+  isReportingLoggerFailure = false
+}
+
+function safeOriginalConsoleCall(level, args) {
+  try {
+    originalConsole[level](...args)
+  } catch (error) {
+    // Stdio can disappear during app teardown when launched from a terminal.
+    if (error?.code === 'EIO' || error?.code === 'EPIPE' || error?.code === 'ERR_STREAM_DESTROYED') {
+      reportLoggerFailure(`suppressed ${level} console write failure`, error)
+      return
+    }
+
+    reportLoggerFailure(`original console ${level} failed`, error)
+  }
+}
+
 function rotateMainLogIfNeeded() {
   try {
     const stats = fs.statSync(MAIN_LOG_PATH)
@@ -479,7 +527,7 @@ function rotateMainLogIfNeeded() {
     fs.renameSync(MAIN_LOG_PATH, archivePath)
   } catch (error) {
     if (error?.code !== 'ENOENT') {
-      originalConsole.error('[logger] failed to rotate main log', error)
+      reportLoggerFailure('failed to rotate main log', error)
     }
   }
 }
@@ -491,20 +539,32 @@ function ensureMainLogStream() {
 
   fs.mkdirSync(LOG_DIR_PATH, { recursive: true })
   rotateMainLogIfNeeded()
-  mainLogStream = fs.createWriteStream(MAIN_LOG_PATH, { flags: 'a' })
-  mainLogStream.on('error', (error) => {
-    originalConsole.error('[logger] log stream error', error)
+  const stream = fs.createWriteStream(MAIN_LOG_PATH, { flags: 'a' })
+  stream.on('error', (error) => {
+    if (mainLogStream === stream) {
+      mainLogStream = null
+    }
+    reportLoggerFailure('log stream error', error)
   })
+  mainLogStream = stream
   return mainLogStream
 }
 
 function writeMainLog(level, args) {
+  const line = createMainLogLine(level, args)
+
   try {
     const stream = ensureMainLogStream()
-    const line = `${new Date().toISOString()} [${level}] ${args.map(formatLogValue).join(' ')}\n`
     stream.write(line)
   } catch (error) {
-    originalConsole.error('[logger] failed to write log line', error)
+    try {
+      appendMainLogLineSync(line)
+    } catch (fallbackError) {
+      reportLoggerFailure('failed to write log line', fallbackError)
+      return
+    }
+
+    reportLoggerFailure('failed to write log line via stream; wrote synchronously instead', error)
   }
 }
 
@@ -514,23 +574,23 @@ function installConsoleLogging() {
   }
 
   console.log = (...args) => {
-    originalConsole.log(...args)
     writeMainLog('INFO', args)
+    safeOriginalConsoleCall('log', args)
   }
 
   console.info = (...args) => {
-    originalConsole.info(...args)
     writeMainLog('INFO', args)
+    safeOriginalConsoleCall('info', args)
   }
 
   console.warn = (...args) => {
-    originalConsole.warn(...args)
     writeMainLog('WARN', args)
+    safeOriginalConsoleCall('warn', args)
   }
 
   console.error = (...args) => {
-    originalConsole.error(...args)
     writeMainLog('ERROR', args)
+    safeOriginalConsoleCall('error', args)
   }
 
   isConsoleLoggingInstalled = true
@@ -1319,10 +1379,12 @@ function createHostedAppView(appConfig) {
   contents.on('page-title-updated', emitState)
   contents.on('did-finish-load', () => {
     enforceHostedAppLocation(appConfig, contents)
+    syncHostedAppNavigationGuards(appConfig, contents)
     syncHostedAppStyles(appConfig, contents)
     syncHostedAppObservers(appConfig, contents)
   })
   contents.on('did-navigate-in-page', () => {
+    syncHostedAppNavigationGuards(appConfig, contents)
     syncHostedAppStyles(appConfig, contents)
     syncHostedAppObservers(appConfig, contents)
   })
@@ -1407,11 +1469,103 @@ function shouldKeepHostedNavigation(appConfig, target) {
     return true
   }
 
+  if (appConfig.id === 'siliconmania') {
+    return isSiliconManiaWeeklyRoute(target)
+  }
+
   if (appConfig.id === 'linkedin') {
     return isLinkedInMessagingRoute(target)
   }
 
   return true
+}
+
+function isSiliconManiaWeeklyRoute(target) {
+  try {
+    const url = new URL(target)
+    const hostname = url.hostname.toLowerCase()
+    const pathname = url.pathname.toLowerCase()
+
+    if (hostname !== 'siliconmania.tv' && hostname !== 'www.siliconmania.tv') {
+      return false
+    }
+
+    return pathname === '/weekly' || pathname === '/weekly/'
+  } catch {
+    return false
+  }
+}
+
+function syncHostedAppNavigationGuards(appConfig, contents) {
+  if (!appConfig || !contents || contents.isDestroyed()) {
+    return
+  }
+
+  if (appConfig.id !== 'siliconmania') {
+    return
+  }
+
+  const currentURL = contents.getURL()
+  if (!currentURL || !isSiliconManiaWeeklyRoute(currentURL)) {
+    return
+  }
+
+  contents.executeJavaScript(siliconManiaNavigationGuardScript(), true).catch(() => {})
+}
+
+function siliconManiaNavigationGuardScript() {
+  return `
+    (() => {
+      if (window.__loiterlySiliconManiaGuardInstalled) {
+        return
+      }
+
+      const isAllowedUrl = (value) => {
+        try {
+          const url = new URL(value, window.location.href)
+          const hostname = url.hostname.toLowerCase()
+          const pathname = url.pathname.toLowerCase()
+
+          if (hostname !== 'siliconmania.tv' && hostname !== 'www.siliconmania.tv') {
+            return false
+          }
+
+          return pathname === '/weekly' || pathname === '/weekly/'
+        } catch {
+          return false
+        }
+      }
+
+      const intercept = (event) => {
+        if (event.defaultPrevented) {
+          return
+        }
+
+        const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null
+        if (!anchor) {
+          return
+        }
+
+        const href = anchor.getAttribute('href')
+        if (!href) {
+          return
+        }
+
+        const targetUrl = new URL(href, window.location.href).toString()
+        if (isAllowedUrl(targetUrl)) {
+          return
+        }
+
+        event.preventDefault()
+        event.stopPropagation()
+        window.open(targetUrl, '_blank', 'noopener')
+      }
+
+      document.addEventListener('click', intercept, true)
+      document.addEventListener('auxclick', intercept, true)
+      window.__loiterlySiliconManiaGuardInstalled = true
+    })()
+  `
 }
 
 function isLinkedInMessagingRoute(target) {
