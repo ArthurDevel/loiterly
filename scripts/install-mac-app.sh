@@ -14,6 +14,7 @@ APP_NAME="Loiterly.app"
 INSTALL_DIR="/Applications"
 OPEN_AFTER_INSTALL=1
 BUILDER_BIN="${ROOT_DIR}/node_modules/.bin/electron-builder"
+ELECTRON_BIN="${ROOT_DIR}/node_modules/.bin/electron"
 
 if [[ "${1:-}" == "--no-open" ]]; then
   OPEN_AFTER_INSTALL=0
@@ -22,6 +23,19 @@ fi
 if [[ ! -x "${BUILDER_BIN}" ]]; then
   echo "electron-builder is missing. Run npm install first."
   exit 1
+fi
+
+if [[ ! -x "${ELECTRON_BIN}" ]]; then
+  echo "electron is missing. Run npm install first."
+  exit 1
+fi
+
+if ! command -v codesign >/dev/null 2>&1; then
+  echo "codesign is unavailable, so Loiterly cannot build an installed .app bundle on this Mac."
+  echo "Falling back to the local development launch instead."
+  echo "Install Xcode Command Line Tools if you want npm run install:mac to place Loiterly in Applications."
+  cd "${ROOT_DIR}"
+  exec "${ELECTRON_BIN}" .
 fi
 
 if [[ ! -w "${INSTALL_DIR}" ]]; then

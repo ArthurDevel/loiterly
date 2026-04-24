@@ -1,33 +1,23 @@
 # Loiterly
 
-## Run locally on macOS
-
-If you do not want to use the DMG, you can run the app directly:
+## Install locally on macOS
 
 ```bash
 git clone https://github.com/ArthurDevel/loiterly.git
 cd loiterly
 npm install
-npm start
-```
-
-That starts the Electron app locally on your Mac.
-
-## Install locally on macOS
-
-If you want Loiterly to behave like a normal installed app instead of depending on an open terminal:
-
-```bash
-npm install
 npm run install:mac
 ```
 
-That builds an unsigned local `Loiterly.app` bundle, copies it into `/Applications` when writable, otherwise `~/Applications`, and launches it.
+That installs and launches Loiterly as a local macOS app, or falls back to a direct local launch if `codesign` is unavailable.
 
-If you only want to install without launching:
+## Install on Windows
 
 ```bash
-npm run install:mac:no-open
+git clone https://github.com/ArthurDevel/loiterly.git
+cd loiterly
+npm install
+npm run install:win
 ```
 
-This does not require an Apple Developer account for local use on the same Mac, but it is not a signed distribution flow for sharing the app with other machines.
+That builds and opens the Windows installer.
