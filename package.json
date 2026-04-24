@@ -17,11 +17,11 @@
     "release:win": "npm run build:win-helper && electron-builder --win nsis --publish always"
   },
   "dependencies": {
-    "electron-updater": "^6.6.2"
+    "electron-updater": "^6.8.3"
   },
   "devDependencies": {
-    "electron": "^35.0.0",
-    "electron-builder": "^25.1.8"
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1"
   },
   "author": "ArthurDevel",
   "repository": {
