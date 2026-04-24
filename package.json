@@ -11,6 +11,8 @@
     "build:win-helper": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-helper.ps1",
     "build:app-icon": "bash scripts/build-app-icon.sh",
     "download:icons": "bash scripts/download-app-icons.sh",
+    "install:mac": "bash scripts/install-mac-app.sh",
+    "install:mac:no-open": "bash scripts/install-mac-app.sh --no-open",
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "release:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish always",
     "dist:win": "npm run build:win-helper && electron-builder --win nsis --publish never",
