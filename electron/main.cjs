@@ -994,9 +994,9 @@ function currentUpdateOffer() {
     version: latestReleaseInfo.version,
     downloadURL: latestReleaseInfo.downloadURL,
     releaseURL: latestReleaseInfo.releaseURL,
-    buttonLabel: 'Install Latest',
-    summary: `Version ${latestReleaseInfo.version} is available`,
-    detail: platformInstallInstructions(),
+    buttonLabel: 'Download',
+    summary: 'Update available',
+    detail: `Version ${latestReleaseInfo.version}`,
   }
 }
 
