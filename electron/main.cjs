@@ -1,8 +1,18 @@
 const path = require('node:path')
 const os = require('node:os')
 const fs = require('node:fs')
-const { execFileSync } = require('node:child_process')
+const util = require('node:util')
+const { execFileSync, spawn } = require('node:child_process')
+const readline = require('node:readline')
 const { autoUpdater } = require('electron-updater')
+const {
+  canTriggerCompanionPing,
+  isCompanionSuppressed: computeCompanionSuppressed,
+  normalizeCompanionInputEvent,
+  shouldAutoReleaseTypingSuppression,
+  shouldReleaseTypingSuppression,
+  shouldTriggerUnreadPing,
+} = require('./companion/state.cjs')
 const {
   app,
   BrowserWindow,
@@ -50,6 +60,12 @@ const CLAUDE_PROJECTS_PATH = path.join(CLAUDE_HOME_PATH, 'projects')
 const CLAUDE_TRANSCRIPT_TAIL_BYTES = 128 * 1024
 const GIT_METADATA_CACHE_TTL_MS = 15 * 1000
 const MAX_TRANSCRIPT_MESSAGES = 120
+const COMPANION_KEYBOARD_IDLE_MS = 900
+const MAX_MAIN_LOG_SIZE_BYTES = 2 * 1024 * 1024
+const LOG_DIR_PATH = process.platform === 'darwin'
+  ? path.join(os.homedir(), 'Library', 'Logs', 'Loiterly')
+  : path.join(os.homedir(), '.loiterly', 'logs')
+const MAIN_LOG_PATH = path.join(LOG_DIR_PATH, 'main.log')
 const PROMPT_SOURCE_CONFIGS = [
   {
     id: 'codex-prompts',
@@ -196,6 +212,7 @@ let conductorRefreshInterval = null
 let releaseCheckInterval = null
 let companionPosition = null
 let lastCursorPoint = null
+let lastCompanionUnreadCount = null
 let isCheckingForUpdates = false
 let isFetchingLatestRelease = false
 let updateStatusLabel = 'Manual updates only'
@@ -228,23 +245,150 @@ let githubIssuesReposState = {
 let githubIssuesReposPromise = null
 const claudeTranscriptPathCache = new Map()
 const gitMetadataCache = new Map()
+let companionInputMonitorProcess = null
+let companionTypingReleaseTimeout = null
+let mainLogStream = null
+let isConsoleLoggingInstalled = false
 
-function handleCompanionKeyboardActivity() {
-  if (isCompanionSuppressedForTyping) {
+const originalConsole = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+}
+
+function formatLogValue(value) {
+  if (value instanceof Error) {
+    return value.stack || `${value.name}: ${value.message}`
+  }
+
+  if (typeof value === 'string') {
+    return value
+  }
+
+  return util.inspect(value, {
+    depth: 5,
+    colors: false,
+    breakLength: 120,
+    maxArrayLength: 50,
+  })
+}
+
+function rotateMainLogIfNeeded() {
+  try {
+    const stats = fs.statSync(MAIN_LOG_PATH)
+    if (stats.size < MAX_MAIN_LOG_SIZE_BYTES) {
+      return
+    }
+
+    const archivePath = `${MAIN_LOG_PATH}.1`
+    fs.rmSync(archivePath, { force: true })
+    fs.renameSync(MAIN_LOG_PATH, archivePath)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      originalConsole.error('[logger] failed to rotate main log', error)
+    }
+  }
+}
+
+function ensureMainLogStream() {
+  if (mainLogStream) {
+    return mainLogStream
+  }
+
+  fs.mkdirSync(LOG_DIR_PATH, { recursive: true })
+  rotateMainLogIfNeeded()
+  mainLogStream = fs.createWriteStream(MAIN_LOG_PATH, { flags: 'a' })
+  mainLogStream.on('error', (error) => {
+    originalConsole.error('[logger] log stream error', error)
+  })
+  return mainLogStream
+}
+
+function writeMainLog(level, args) {
+  try {
+    const stream = ensureMainLogStream()
+    const line = `${new Date().toISOString()} [${level}] ${args.map(formatLogValue).join(' ')}\n`
+    stream.write(line)
+  } catch (error) {
+    originalConsole.error('[logger] failed to write log line', error)
+  }
+}
+
+function installConsoleLogging() {
+  if (isConsoleLoggingInstalled) {
     return
   }
 
+  console.log = (...args) => {
+    originalConsole.log(...args)
+    writeMainLog('INFO', args)
+  }
+
+  console.info = (...args) => {
+    originalConsole.info(...args)
+    writeMainLog('INFO', args)
+  }
+
+  console.warn = (...args) => {
+    originalConsole.warn(...args)
+    writeMainLog('WARN', args)
+  }
+
+  console.error = (...args) => {
+    originalConsole.error(...args)
+    writeMainLog('ERROR', args)
+  }
+
+  isConsoleLoggingInstalled = true
+  writeMainLog('INFO', ['Loiterly logging initialized', { path: MAIN_LOG_PATH }])
+}
+
+function closeMainLog() {
+  if (!mainLogStream) {
+    return
+  }
+
+  mainLogStream.end()
+  mainLogStream = null
+}
+
+installConsoleLogging()
+
+process.on('warning', (warning) => {
+  writeMainLog('WARN', ['process warning', warning])
+})
+
+process.on('unhandledRejection', (reason) => {
+  writeMainLog('FATAL', ['unhandledRejection', reason])
+})
+
+process.on('uncaughtException', (error) => {
+  writeMainLog('FATAL', ['uncaughtException', error])
+})
+
+process.on('exit', (code) => {
+  writeMainLog('INFO', ['process exit', { code }])
+  closeMainLog()
+})
+
+function handleCompanionKeyboardActivity() {
   isCompanionSuppressedForTyping = true
   syncCompanionVisibility()
+  scheduleCompanionTypingRelease()
 }
 
 function handleCompanionPointerActivity() {
+  clearCompanionTypingRelease()
+
   if (!isCompanionSuppressedForTyping) {
     return
   }
 
-  isCompanionSuppressedForTyping = false
-  syncCompanionVisibility()
+  if (shouldReleaseTypingSuppression('pointer')) {
+    isCompanionSuppressedForTyping = false
+    syncCompanionVisibility()
+  }
 }
 
 function attachCompanionInputTracking(contents) {
@@ -261,6 +405,92 @@ function attachCompanionInputTracking(contents) {
   contents.on('before-mouse-event', () => {
     handleCompanionPointerActivity()
   })
+}
+
+function clearCompanionTypingRelease() {
+  if (!companionTypingReleaseTimeout) {
+    return
+  }
+
+  clearTimeout(companionTypingReleaseTimeout)
+  companionTypingReleaseTimeout = null
+}
+
+function scheduleCompanionTypingRelease() {
+  clearCompanionTypingRelease()
+
+  const startedAt = Date.now()
+  companionTypingReleaseTimeout = setTimeout(() => {
+    companionTypingReleaseTimeout = null
+
+    if (!shouldAutoReleaseTypingSuppression(Date.now() - startedAt, COMPANION_KEYBOARD_IDLE_MS)) {
+      return
+    }
+
+    if (!isCompanionSuppressedForTyping) {
+      return
+    }
+
+    isCompanionSuppressedForTyping = false
+    syncCompanionVisibility()
+  }, COMPANION_KEYBOARD_IDLE_MS)
+}
+
+function startCompanionInputMonitor() {
+  if (process.platform !== 'darwin' || companionInputMonitorProcess) {
+    return
+  }
+
+  const monitorPath = path.join(__dirname, 'native', 'companion-input-monitor.swift')
+  const child = spawn('swift', [monitorPath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  companionInputMonitorProcess = child
+
+  const stdout = readline.createInterface({ input: child.stdout })
+  stdout.on('line', (line) => {
+    const eventType = normalizeCompanionInputEvent(line)
+    if (eventType === 'keyboard') {
+      handleCompanionKeyboardActivity()
+      return
+    }
+
+    if (eventType === 'pointer') {
+      handleCompanionPointerActivity()
+    }
+  })
+
+  child.stderr.on('data', (chunk) => {
+    const message = `${chunk || ''}`.trim()
+    if (message) {
+      console.error(`[companion-input-monitor] ${message}`)
+    }
+  })
+
+  child.on('error', (error) => {
+    console.error('[companion-input-monitor] failed to start', error)
+  })
+
+  child.on('exit', () => {
+    stdout.close()
+    console.warn('[companion-input-monitor] exited')
+    if (companionInputMonitorProcess === child) {
+      companionInputMonitorProcess = null
+      if (!isQuitting && app.isReady()) {
+        setTimeout(startCompanionInputMonitor, 1000)
+      }
+    }
+  })
+}
+
+function stopCompanionInputMonitor() {
+  if (!companionInputMonitorProcess) {
+    return
+  }
+
+  companionInputMonitorProcess.kill('SIGTERM')
+  companionInputMonitorProcess = null
 }
 
 function createShellWindow() {
@@ -2070,7 +2300,14 @@ function updateCompanionUnreadBadge(conductorSnapshot = null) {
   }
 
   const snapshot = conductorSnapshot || loadConductorSnapshot()
-  const hasUnread = snapshot.unreadAgents.length > 0
+  const unreadCount = snapshot.unreadAgents.reduce((total, session) => (
+    total + Math.max(0, Number(session?.unreadCount || 0))
+  ), 0)
+  const hasUnread = unreadCount > 0
+
+  if (shouldTriggerUnreadPing(lastCompanionUnreadCount, unreadCount)) {
+    triggerCompanionPing()
+  }
 
   companionWindow.webContents.executeJavaScript(
     `
@@ -2078,6 +2315,39 @@ function updateCompanionUnreadBadge(conductorSnapshot = null) {
         const badge = document.querySelector('.companion-badge')
         if (!badge) return
         badge.hidden = ${hasUnread ? 'false' : 'true'}
+      })()
+    `,
+    true
+  ).catch(() => {})
+
+  lastCompanionUnreadCount = unreadCount
+}
+
+function triggerCompanionPing() {
+  if (!companionWindow || companionWindow.isDestroyed()) {
+    return
+  }
+
+  if (!canTriggerCompanionPing({
+    isCompanionEnabled,
+    isCompanionSuppressedForTyping,
+    isMainWindowVisible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+  })) {
+    return
+  }
+
+  companionWindow.webContents.executeJavaScript(
+    `
+      (() => {
+        const companion = document.querySelector('.companion')
+        if (!companion) return
+        window.__loiterlyCompanionPingTimer && clearTimeout(window.__loiterlyCompanionPingTimer)
+        companion.classList.remove('is-pinging')
+        void companion.offsetWidth
+        companion.classList.add('is-pinging')
+        window.__loiterlyCompanionPingTimer = setTimeout(() => {
+          companion.classList.remove('is-pinging')
+        }, 960)
       })()
     `,
     true
@@ -2879,6 +3149,7 @@ function hideWindow() {
   backdropWindow.hide()
   refreshTrayMenu()
   syncCompanionVisibility()
+  triggerCompanionPing()
 }
 
 function toggleWindowVisibility() {
@@ -2894,7 +3165,11 @@ function toggleWindowVisibility() {
 }
 
 function isCompanionSuppressed() {
-  return isCompanionSuppressedForTyping || Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+  return computeCompanionSuppressed({
+    isCompanionEnabled,
+    isCompanionSuppressedForTyping,
+    isMainWindowVisible: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+  })
 }
 
 function syncCompanionVisibility() {
@@ -3011,14 +3286,6 @@ function updateCompanionPosition() {
   }
 
   const cursor = screen.getCursorScreenPoint()
-
-  if (
-    isCompanionSuppressedForTyping &&
-    lastCursorPoint &&
-    (cursor.x !== lastCursorPoint.x || cursor.y !== lastCursorPoint.y)
-  ) {
-    isCompanionSuppressedForTyping = false
-  }
 
   lastCursorPoint = { x: cursor.x, y: cursor.y }
 
@@ -4632,9 +4899,24 @@ ipcMain.on('hosted-app:unread-count', (_event, payload) => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  stopCompanionInputMonitor()
+  console.info('app before-quit')
+})
+
+app.on('render-process-gone', (_event, contents, details) => {
+  console.error('render-process-gone', {
+    reason: details?.reason,
+    exitCode: details?.exitCode,
+    url: contents?.getURL?.() || '',
+  })
+})
+
+app.on('child-process-gone', (_event, details) => {
+  console.error('child-process-gone', details)
 })
 
 app.whenReady().then(() => {
+  console.info('app ready', { logPath: MAIN_LOG_PATH })
   if (app.dock) {
     app.dock.hide()
   }
@@ -4642,6 +4924,7 @@ app.whenReady().then(() => {
   mainWindow = createShellWindow()
   backdropWindow = createBackdropWindow()
   companionWindow = createCompanionWindow()
+  startCompanionInputMonitor()
   createViews()
   createTray()
   configureAutoUpdater()
@@ -4655,7 +4938,10 @@ app.whenReady().then(() => {
 })
 
 app.on('will-quit', () => {
+  console.info('app will-quit')
+  stopCompanionInputMonitor()
   globalShortcut.unregisterAll()
+  closeMainLog()
 })
 
 app.on('window-all-closed', (event) => {
