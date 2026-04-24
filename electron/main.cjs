@@ -921,16 +921,13 @@ function createCompanionWindow() {
 }
 
 function createTray() {
-  const image = nativeImage.createFromDataURL(createTrayIconDataUrl())
+  const image = nativeImage.createFromPath(path.join(__dirname, 'assets', 'loiterly-tray-template.png'))
   image.setTemplateImage(true)
   const trayImage = image.resize({ width: 18, height: 18 })
   trayImage.setTemplateImage(true)
 
   tray = new Tray(trayImage)
   tray.setToolTip('Loiterly')
-  if (process.platform === 'darwin') {
-    tray.setTitle('L')
-  }
   refreshTrayMenu()
 }
 
@@ -5097,17 +5094,6 @@ function isPromptPathAllowed(targetPath) {
     const resolvedRoot = path.resolve(source.rootPath)
     return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)
   })
-}
-
-function createTrayIconDataUrl() {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
-      <path fill="black" d="M4 3.25L16.5 11L4 18.75V3.25Z"/>
-      <path fill="black" d="M14.9 4.7H16.1V7.3H18.7V8.5H16.1V11.1H14.9V8.5H12.3V7.3H14.9Z"/>
-    </svg>
-  `
-
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`
 }
 
 ipcMain.handle('shell:get-state', async () => ({
