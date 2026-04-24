@@ -2,14 +2,12 @@ const path = require('node:path')
 const os = require('node:os')
 const fs = require('node:fs')
 const util = require('node:util')
-const { execFileSync, spawn } = require('node:child_process')
-const readline = require('node:readline')
+const { execFileSync } = require('node:child_process')
 const { autoUpdater } = require('electron-updater')
 const { compareVersions, releaseVersionFromPayload } = require('./updater/version.cjs')
 const {
   canTriggerCompanionPing,
   isCompanionSuppressed: computeCompanionSuppressed,
-  normalizeCompanionInputEvent,
   shouldAutoReleaseTypingSuppression,
   shouldReleaseTypingSuppression,
   shouldTriggerUnreadPing,
@@ -253,12 +251,10 @@ let githubIssuesReposState = {
 let githubIssuesReposPromise = null
 const claudeTranscriptPathCache = new Map()
 const gitMetadataCache = new Map()
-let companionInputMonitorProcess = null
 let companionTypingReleaseTimeout = null
 let mainLogStream = null
 let isConsoleLoggingInstalled = false
 let isReportingLoggerFailure = false
-let isCompanionInputMonitorUnavailable = false
 let sqliteModuleLoadAttempted = false
 let sqliteDatabaseSync = null
 
@@ -418,39 +414,6 @@ function chooseReleaseAsset(assets) {
     const match = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith(extension))
     if (match) {
       return match
-    }
-  }
-
-  return null
-}
-
-function resolveCompanionMonitorLaunchSpec() {
-  if (IS_MAC) {
-    const monitorPath = path.join(__dirname, 'native', 'companion-input-monitor.swift')
-    if (!fs.existsSync(monitorPath)) {
-      return null
-    }
-
-    return {
-      command: 'swift',
-      args: [monitorPath],
-      description: monitorPath,
-    }
-  }
-
-  if (IS_WINDOWS) {
-    const monitorPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'native', 'bin', 'windows', 'companion-input-monitor.exe')
-      : path.join(__dirname, 'native', 'bin', 'windows', 'companion-input-monitor.exe')
-
-    if (!fs.existsSync(monitorPath)) {
-      return null
-    }
-
-    return {
-      command: monitorPath,
-      args: [],
-      description: monitorPath,
     }
   }
 
@@ -689,73 +652,6 @@ function scheduleCompanionTypingRelease() {
     isCompanionSuppressedForTyping = false
     syncCompanionVisibility()
   }, COMPANION_KEYBOARD_IDLE_MS)
-}
-
-function startCompanionInputMonitor() {
-  if (companionInputMonitorProcess || isCompanionInputMonitorUnavailable) {
-    return
-  }
-
-  const launchSpec = resolveCompanionMonitorLaunchSpec()
-  if (!launchSpec) {
-    isCompanionInputMonitorUnavailable = true
-    console.warn('[companion-input-monitor] helper unavailable for this platform or build')
-    return
-  }
-
-  const child = spawn(launchSpec.command, launchSpec.args, {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  })
-
-  companionInputMonitorProcess = child
-
-  const stdout = readline.createInterface({ input: child.stdout })
-  stdout.on('line', (line) => {
-    const eventType = normalizeCompanionInputEvent(line)
-    if (eventType === 'keyboard') {
-      handleCompanionKeyboardActivity()
-      return
-    }
-
-    if (eventType === 'pointer') {
-      handleCompanionPointerActivity()
-    }
-  })
-
-  child.stderr.on('data', (chunk) => {
-    const message = `${chunk || ''}`.trim()
-    if (message) {
-      console.error(`[companion-input-monitor] ${message}`)
-    }
-  })
-
-  child.on('error', (error) => {
-    console.error('[companion-input-monitor] failed to start', error)
-    if (error?.code === 'ENOENT') {
-      isCompanionInputMonitorUnavailable = true
-    }
-  })
-
-  child.on('exit', () => {
-    stdout.close()
-    console.warn('[companion-input-monitor] exited')
-    if (companionInputMonitorProcess === child) {
-      companionInputMonitorProcess = null
-      if (!isQuitting && app.isReady() && !isCompanionInputMonitorUnavailable) {
-        setTimeout(startCompanionInputMonitor, 1000)
-      }
-    }
-  })
-}
-
-function stopCompanionInputMonitor() {
-  if (!companionInputMonitorProcess) {
-    return
-  }
-
-  companionInputMonitorProcess.kill()
-  companionInputMonitorProcess = null
 }
 
 function createShellWindow() {
@@ -5190,7 +5086,6 @@ ipcMain.on('hosted-app:unread-count', (_event, payload) => {
 
 app.on('before-quit', () => {
   isQuitting = true
-  stopCompanionInputMonitor()
   console.info('app before-quit')
 })
 
@@ -5218,7 +5113,6 @@ app.whenReady().then(() => {
   mainWindow = createShellWindow()
   backdropWindow = createBackdropWindow()
   companionWindow = createCompanionWindow()
-  startCompanionInputMonitor()
   createViews()
   createTray()
   configureAutoUpdater()
@@ -5233,7 +5127,6 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   console.info('app will-quit')
-  stopCompanionInputMonitor()
   globalShortcut.unregisterAll()
   closeMainLog()
 })
