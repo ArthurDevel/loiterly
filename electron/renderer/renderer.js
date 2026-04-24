@@ -238,13 +238,15 @@ function render() {
 
   if (state.updateOffer?.downloadURL || state.updateOffer?.releaseURL) {
     elements.updateCard.hidden = false
-    elements.updateTitle.textContent = state.updateOffer.summary || 'A new version is available'
+    elements.updateTitle.textContent = state.updateOffer.summary || 'Update available'
     elements.updateDetail.textContent = state.updateOffer.detail || ''
-    elements.updateAction.textContent = state.updateOffer.buttonLabel || 'Install Latest'
+    elements.updateDetail.hidden = !state.updateOffer.detail
+    elements.updateAction.textContent = state.updateOffer.buttonLabel || 'Download'
   } else {
     elements.updateCard.hidden = true
     elements.updateTitle.textContent = ''
     elements.updateDetail.textContent = ''
+    elements.updateDetail.hidden = true
     elements.updateAction.textContent = ''
   }
 
