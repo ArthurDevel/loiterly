@@ -5,6 +5,7 @@ const util = require('node:util')
 const { execFileSync, spawn } = require('node:child_process')
 const readline = require('node:readline')
 const { autoUpdater } = require('electron-updater')
+const { compareVersions, releaseVersionFromPayload } = require('./updater/version.cjs')
 const {
   canTriggerCompanionPing,
   isCompanionSuppressed: computeCompanionSuppressed,
@@ -951,38 +952,6 @@ function setUpdateStatus(label, options = {}) {
   }
 
   refreshTrayMenu()
-}
-
-function sanitizeVersion(value) {
-  return String(value || '')
-    .trim()
-    .replace(/^[^\d]*/, '')
-    .replace(/[^\d.].*$/, '')
-}
-
-function compareVersions(left, right) {
-  const leftParts = sanitizeVersion(left).split('.').filter(Boolean).map((part) => Number.parseInt(part, 10) || 0)
-  const rightParts = sanitizeVersion(right).split('.').filter(Boolean).map((part) => Number.parseInt(part, 10) || 0)
-  const length = Math.max(leftParts.length, rightParts.length)
-
-  for (let index = 0; index < length; index += 1) {
-    const leftValue = leftParts[index] || 0
-    const rightValue = rightParts[index] || 0
-
-    if (leftValue > rightValue) {
-      return 1
-    }
-
-    if (leftValue < rightValue) {
-      return -1
-    }
-  }
-
-  return 0
-}
-
-function releaseVersionFromPayload(release) {
-  return sanitizeVersion(release?.tag_name || release?.name || '')
 }
 
 function currentUpdateOffer() {
