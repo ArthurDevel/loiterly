@@ -239,6 +239,7 @@ const views = new Map()
 const visibleViews = new Set()
 const apps = new Map(APP_CONFIGS.map((appConfig) => [appConfig.id, appConfig]))
 const hostedAppHomeURLs = new Map()
+const loadedHostedAppIds = new Set()
 const localAppSignatures = new Map()
 const localAppScrollPositions = new Map()
 const popupWindows = new Set()
@@ -1355,8 +1356,23 @@ function createHostedAppView(appConfig) {
     syncHostedAppObservers(appConfig, contents)
   })
 
-  contents.loadURL(appConfig.initialURL)
   return view
+}
+
+function ensureHostedAppLoaded(appId, targetURL = null) {
+  const appConfig = apps.get(appId)
+  if (!appConfig || appConfig.type !== 'remote' || loadedHostedAppIds.has(appId)) {
+    return false
+  }
+
+  const view = views.get(appId)
+  if (!view) {
+    return false
+  }
+
+  loadedHostedAppIds.add(appId)
+  view.webContents.loadURL(targetURL || hostedAppHomeURLs.get(appId) || appConfig.initialURL)
+  return true
 }
 
 function githubIssuesURL(repoName) {
@@ -2420,6 +2436,8 @@ function setActiveApp(appId) {
   const appConfig = apps.get(appId)
   if (appConfig && appConfig.type === 'local') {
     refreshLocalAppView(appId)
+  } else {
+    ensureHostedAppLoaded(appId)
   }
 
   if (appId === 'github-issues' && !githubIssuesReposState.isLoading && githubIssuesReposState.repos.length < 1) {
@@ -2471,6 +2489,10 @@ function openAppURL(appId, target) {
   }
 
   syncHostedAppHomeURL(appId, target)
+  if (ensureHostedAppLoaded(appId, target)) {
+    return
+  }
+
   view.webContents.loadURL(target)
 }
 
