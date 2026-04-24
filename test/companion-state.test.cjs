@@ -6,7 +6,6 @@ const assert = require('node:assert/strict')
 const {
   canTriggerCompanionPing,
   isCompanionSuppressed,
-  normalizeCompanionInputEvent,
   shouldAutoReleaseTypingSuppression,
   shouldReleaseTypingSuppression,
   shouldTriggerUnreadPing,
@@ -60,10 +59,4 @@ test('typing suppression auto-releases after keyboard inactivity', () => {
   assert.equal(shouldAutoReleaseTypingSuppression(300, 900), false)
   assert.equal(shouldAutoReleaseTypingSuppression(900, 900), true)
   assert.equal(shouldAutoReleaseTypingSuppression(1400, 900), true)
-})
-
-test('global input monitor events are normalized conservatively', () => {
-  assert.equal(normalizeCompanionInputEvent('keyboard'), 'keyboard')
-  assert.equal(normalizeCompanionInputEvent(' pointer '), 'pointer')
-  assert.equal(normalizeCompanionInputEvent('unknown'), null)
 })
