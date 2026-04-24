@@ -34,6 +34,8 @@ const WINDOW_MARGIN = 16
 const POPUP_WIDTH = 720
 const POPUP_HEIGHT = 700
 const POPUP_MARGIN = 48
+const IS_MAC = process.platform === 'darwin'
+const IS_WINDOWS = process.platform === 'win32'
 const GLOBAL_TOGGLE_SHORTCUT = 'CommandOrControl+Shift+L'
 const COMPANION_SIZE = 24
 const COMPANION_OFFSET = { x: 10, y: -14 }
@@ -47,13 +49,9 @@ const GITHUB_LATEST_RELEASE_API_URL = 'https://api.github.com/repos/ArthurDevel/
 const GITHUB_ISSUES_OWNER = 'ArthurDevel'
 const GITHUB_ISSUES_DEFAULT_REPO = 'openpoke'
 const GITHUB_ISSUES_REPOS_URL = `https://github.com/${GITHUB_ISSUES_OWNER}?tab=repositories`
-const CONDUCTOR_DB_PATH = path.join(
-  os.homedir(),
-  'Library',
-  'Application Support',
-  'com.conductor.app',
-  'conductor.db'
-)
+const WINDOWS_APPDATA_PATH = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+const WINDOWS_LOCAL_APPDATA_PATH = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+const CONDUCTOR_DB_PATH = resolveConductorDbPath()
 const CLAUDE_HOME_PATH = path.join(os.homedir(), '.claude')
 const CLAUDE_SESSIONS_PATH = path.join(CLAUDE_HOME_PATH, 'sessions')
 const CLAUDE_PROJECTS_PATH = path.join(CLAUDE_HOME_PATH, 'projects')
@@ -62,9 +60,7 @@ const GIT_METADATA_CACHE_TTL_MS = 15 * 1000
 const MAX_TRANSCRIPT_MESSAGES = 120
 const COMPANION_KEYBOARD_IDLE_MS = 900
 const MAX_MAIN_LOG_SIZE_BYTES = 2 * 1024 * 1024
-const LOG_DIR_PATH = process.platform === 'darwin'
-  ? path.join(os.homedir(), 'Library', 'Logs', 'Loiterly')
-  : path.join(os.homedir(), '.loiterly', 'logs')
+const LOG_DIR_PATH = resolveLogDirPath()
 const MAIN_LOG_PATH = path.join(LOG_DIR_PATH, 'main.log')
 const PROMPT_SOURCE_CONFIGS = [
   {
@@ -249,12 +245,209 @@ let companionInputMonitorProcess = null
 let companionTypingReleaseTimeout = null
 let mainLogStream = null
 let isConsoleLoggingInstalled = false
+let isCompanionInputMonitorUnavailable = false
+let sqliteModuleLoadAttempted = false
+let sqliteDatabaseSync = null
 
 const originalConsole = {
   log: console.log.bind(console),
   info: console.info.bind(console),
   warn: console.warn.bind(console),
   error: console.error.bind(console),
+}
+
+function resolveLogDirPath() {
+  if (IS_MAC) {
+    return path.join(os.homedir(), 'Library', 'Logs', 'Loiterly')
+  }
+
+  if (IS_WINDOWS) {
+    return path.join(WINDOWS_LOCAL_APPDATA_PATH, 'Loiterly', 'logs')
+  }
+
+  return path.join(os.homedir(), '.loiterly', 'logs')
+}
+
+function candidateConductorDbPaths() {
+  const configuredPath = `${process.env.LOITERLY_CONDUCTOR_DB_PATH || ''}`.trim()
+  const candidates = []
+
+  if (configuredPath) {
+    candidates.push(configuredPath)
+  }
+
+  if (IS_MAC) {
+    candidates.push(
+      path.join(os.homedir(), 'Library', 'Application Support', 'com.conductor.app', 'conductor.db')
+    )
+  } else if (IS_WINDOWS) {
+    candidates.push(
+      path.join(WINDOWS_APPDATA_PATH, 'com.conductor.app', 'conductor.db'),
+      path.join(WINDOWS_LOCAL_APPDATA_PATH, 'com.conductor.app', 'conductor.db'),
+      path.join(WINDOWS_APPDATA_PATH, 'Conductor', 'conductor.db'),
+      path.join(WINDOWS_LOCAL_APPDATA_PATH, 'Conductor', 'conductor.db')
+    )
+  } else {
+    candidates.push(
+      path.join(os.homedir(), '.config', 'com.conductor.app', 'conductor.db'),
+      path.join(os.homedir(), '.config', 'Conductor', 'conductor.db')
+    )
+  }
+
+  return [...new Set(candidates.filter(Boolean))]
+}
+
+function resolveConductorDbPath() {
+  const candidates = candidateConductorDbPaths()
+  const existingPath = candidates.find((candidate) => fs.existsSync(candidate))
+
+  return existingPath || candidates[0] || ''
+}
+
+function loadDatabaseSync() {
+  if (sqliteModuleLoadAttempted) {
+    return sqliteDatabaseSync
+  }
+
+  sqliteModuleLoadAttempted = true
+
+  try {
+    ;({ DatabaseSync: sqliteDatabaseSync } = require('node:sqlite'))
+  } catch (error) {
+    console.warn('[conductor] unable to load node:sqlite', error)
+    sqliteDatabaseSync = null
+  }
+
+  return sqliteDatabaseSync
+}
+
+function readJsonPayloadFromDatabase(dbPath, sql) {
+  if (!dbPath || !fs.existsSync(dbPath)) {
+    return '[]'
+  }
+
+  if (!IS_WINDOWS) {
+    const raw = execFileSync('sqlite3', [dbPath, sql], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+
+    return raw || '[]'
+  }
+
+  const DatabaseSync = loadDatabaseSync()
+  if (!DatabaseSync) {
+    throw new Error('node:sqlite is unavailable for Windows Conductor queries.')
+  }
+
+  const database = new DatabaseSync(dbPath, { readOnly: true })
+
+  try {
+    const row = database.prepare(sql).get()
+    return typeof row?.payload === 'string' && row.payload ? row.payload : '[]'
+  } finally {
+    database.close()
+  }
+}
+
+function platformInstallInstructions() {
+  if (IS_WINDOWS) {
+    return 'Download the newest installer and run it.'
+  }
+
+  if (IS_MAC) {
+    return 'Download the newest build and replace the app in Applications.'
+  }
+
+  return 'Download the newest build and install it manually.'
+}
+
+function preferredReleaseAssetSuffix() {
+  if (IS_MAC) {
+    if (process.arch === 'arm64') {
+      return '-arm64.dmg'
+    }
+
+    if (process.arch === 'x64') {
+      return '-x64.dmg'
+    }
+
+    return '.dmg'
+  }
+
+  if (IS_WINDOWS) {
+    return `-${process.arch}.exe`
+  }
+
+  return '.zip'
+}
+
+function chooseReleaseAsset(assets) {
+  if (!Array.isArray(assets) || assets.length === 0) {
+    return null
+  }
+
+  const preferredSuffix = preferredReleaseAssetSuffix()
+  if (preferredSuffix) {
+    const exactMatch = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith(preferredSuffix))
+    if (exactMatch) {
+      return exactMatch
+    }
+  }
+
+  const fallbackExtensions = IS_WINDOWS
+    ? ['.exe', '.msi', '.zip']
+    : IS_MAC
+      ? ['.dmg', '.zip']
+      : ['.AppImage', '.deb', '.rpm', '.zip']
+
+  for (const extension of fallbackExtensions) {
+    const match = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith(extension))
+    if (match) {
+      return match
+    }
+  }
+
+  return null
+}
+
+function resolveCompanionMonitorLaunchSpec() {
+  if (IS_MAC) {
+    const monitorPath = path.join(__dirname, 'native', 'companion-input-monitor.swift')
+    if (!fs.existsSync(monitorPath)) {
+      return null
+    }
+
+    return {
+      command: 'swift',
+      args: [monitorPath],
+      description: monitorPath,
+    }
+  }
+
+  if (IS_WINDOWS) {
+    const monitorPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'native', 'bin', 'windows', 'companion-input-monitor.exe')
+      : path.join(__dirname, 'native', 'bin', 'windows', 'companion-input-monitor.exe')
+
+    if (!fs.existsSync(monitorPath)) {
+      return null
+    }
+
+    return {
+      command: monitorPath,
+      args: [],
+      description: monitorPath,
+    }
+  }
+
+  return null
+}
+
+function hideWindowControls(window) {
+  if (typeof window?.setWindowButtonVisibility === 'function') {
+    window.setWindowButtonVisibility(false)
+  }
 }
 
 function formatLogValue(value) {
@@ -437,13 +630,20 @@ function scheduleCompanionTypingRelease() {
 }
 
 function startCompanionInputMonitor() {
-  if (process.platform !== 'darwin' || companionInputMonitorProcess) {
+  if (companionInputMonitorProcess || isCompanionInputMonitorUnavailable) {
     return
   }
 
-  const monitorPath = path.join(__dirname, 'native', 'companion-input-monitor.swift')
-  const child = spawn('swift', [monitorPath], {
+  const launchSpec = resolveCompanionMonitorLaunchSpec()
+  if (!launchSpec) {
+    isCompanionInputMonitorUnavailable = true
+    console.warn('[companion-input-monitor] helper unavailable for this platform or build')
+    return
+  }
+
+  const child = spawn(launchSpec.command, launchSpec.args, {
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   })
 
   companionInputMonitorProcess = child
@@ -470,6 +670,9 @@ function startCompanionInputMonitor() {
 
   child.on('error', (error) => {
     console.error('[companion-input-monitor] failed to start', error)
+    if (error?.code === 'ENOENT') {
+      isCompanionInputMonitorUnavailable = true
+    }
   })
 
   child.on('exit', () => {
@@ -477,7 +680,7 @@ function startCompanionInputMonitor() {
     console.warn('[companion-input-monitor] exited')
     if (companionInputMonitorProcess === child) {
       companionInputMonitorProcess = null
-      if (!isQuitting && app.isReady()) {
+      if (!isQuitting && app.isReady() && !isCompanionInputMonitorUnavailable) {
         setTimeout(startCompanionInputMonitor, 1000)
       }
     }
@@ -489,7 +692,7 @@ function stopCompanionInputMonitor() {
     return
   }
 
-  companionInputMonitorProcess.kill('SIGTERM')
+  companionInputMonitorProcess.kill()
   companionInputMonitorProcess = null
 }
 
@@ -520,7 +723,7 @@ function createShellWindow() {
 
   attachCompanionInputTracking(window.webContents)
   window.loadFile(path.join(__dirname, 'renderer', 'index.html'))
-  window.setWindowButtonVisibility(false)
+  hideWindowControls(window)
   window.setAlwaysOnTop(true, 'floating')
 
   window.on('close', (event) => {
@@ -616,7 +819,7 @@ function createBackdropWindow() {
   })
 
   window.setAlwaysOnTop(true, 'floating')
-  window.setWindowButtonVisibility(false)
+  hideWindowControls(window)
   window.loadFile(path.join(__dirname, 'backdrop', 'index.html'))
 
   return window
@@ -644,9 +847,11 @@ function createCompanionWindow() {
   })
 
   window.setAlwaysOnTop(true, 'screen-saver')
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  if (IS_MAC) {
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  }
   window.setIgnoreMouseEvents(true, { forward: true })
-  window.setWindowButtonVisibility(false)
+  hideWindowControls(window)
   window.loadFile(path.join(__dirname, 'companion', 'index.html'))
   window.webContents.on('did-finish-load', () => {
     updateCompanionUnreadBadge()
@@ -670,7 +875,7 @@ function createTray() {
 }
 
 function updaterSupported() {
-  return process.platform === 'darwin'
+  return IS_MAC || IS_WINDOWS
 }
 
 function updaterEnabled() {
@@ -734,7 +939,7 @@ function currentUpdateOffer() {
     releaseURL: latestReleaseInfo.releaseURL,
     buttonLabel: 'Install Latest',
     summary: `Version ${latestReleaseInfo.version} is available`,
-    detail: 'Download the newest build and replace the app in Applications.',
+    detail: platformInstallInstructions(),
   }
 }
 
@@ -921,7 +1126,7 @@ function checkForAppUpdates(manual = false) {
       dialog.showMessageBox({
         type: 'info',
         message: 'This build uses manual updates.',
-        detail: 'Use the Download Latest Release item in the tray menu to install a new DMG.',
+        detail: `Use the Download Latest Release item in the tray menu to install the newest build. ${platformInstallInstructions()}`,
       }).catch(() => {})
     }
     return
@@ -951,48 +1156,6 @@ function installDownloadedUpdate() {
 
   isQuitting = true
   autoUpdater.quitAndInstall()
-}
-
-function preferredReleaseAssetSuffix() {
-  if (process.platform === 'darwin') {
-    if (process.arch === 'arm64') {
-      return '-arm64.dmg'
-    }
-
-    if (process.arch === 'x64') {
-      return '-x64.dmg'
-    }
-
-    return '.dmg'
-  }
-
-  return ''
-}
-
-function chooseReleaseAsset(assets) {
-  if (!Array.isArray(assets) || assets.length === 0) {
-    return null
-  }
-
-  const preferredSuffix = preferredReleaseAssetSuffix()
-  if (preferredSuffix) {
-    const exactMatch = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith(preferredSuffix))
-    if (exactMatch) {
-      return exactMatch
-    }
-  }
-
-  const dmgMatch = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith('.dmg'))
-  if (dmgMatch) {
-    return dmgMatch
-  }
-
-  const zipMatch = assets.find((asset) => typeof asset?.name === 'string' && asset.name.endsWith('.zip'))
-  if (zipMatch) {
-    return zipMatch
-  }
-
-  return null
 }
 
 async function fetchLatestReleaseInfo() {
@@ -3192,6 +3355,11 @@ function registerShortcuts() {
 }
 
 function showOnActiveSpace(window, show) {
+  if (!IS_MAC) {
+    show()
+    return
+  }
+
   window.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
@@ -3212,7 +3380,7 @@ function shouldIgnoreBlurHide() {
   const display = screen.getDisplayNearestPoint(cursor)
   const topHotzone = display.bounds.y + 6
 
-  return cursor.y <= topHotzone || isFocusWithinWindowGroup()
+  return (IS_MAC && cursor.y <= topHotzone) || isFocusWithinWindowGroup()
 }
 
 function isFocusWithinWindowGroup() {
@@ -3969,7 +4137,7 @@ function loadConductorTranscriptEntries(sessionId) {
         )
       ),
       '[]'
-    )
+    ) AS payload
     FROM (
       SELECT role, content, created_at
       FROM session_messages
@@ -3980,11 +4148,7 @@ function loadConductorTranscriptEntries(sessionId) {
   `
 
   try {
-    const raw = execFileSync('sqlite3', [CONDUCTOR_DB_PATH, sql], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-
+    const raw = readJsonPayloadFromDatabase(CONDUCTOR_DB_PATH, sql)
     const rows = raw ? JSON.parse(raw) : []
     const normalizedRows = Array.isArray(rows) ? rows.reverse() : []
     const entries = normalizedRows
@@ -4101,7 +4265,7 @@ function loadConductorSnapshot() {
         )
       ),
       '[]'
-    )
+    ) AS payload
     FROM (
       SELECT
         s.id AS session_id,
@@ -4129,11 +4293,7 @@ function loadConductorSnapshot() {
   const claudeCliSnapshot = loadClaudeCliSnapshot()
 
   try {
-    const raw = execFileSync('sqlite3', [CONDUCTOR_DB_PATH, sql], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim()
-
+    const raw = readJsonPayloadFromDatabase(CONDUCTOR_DB_PATH, sql)
     const sessions = raw ? JSON.parse(raw) : []
     const normalizedSessions = Array.isArray(sessions) ? sessions : []
     const sessionsWithTranscripts = normalizedSessions.map((session) => ({
@@ -4917,6 +5077,9 @@ app.on('child-process-gone', (_event, details) => {
 
 app.whenReady().then(() => {
   console.info('app ready', { logPath: MAIN_LOG_PATH })
+  if (IS_WINDOWS) {
+    app.setAppUserModelId('com.arthurdevel.loiterly')
+  }
   if (app.dock) {
     app.dock.hide()
   }
