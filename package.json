@@ -1,6 +1,6 @@
 {
   "name": "loiterly-electron",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "license": "MIT",
   "description": "Floating Chromium workspace prototype for Loiterly",

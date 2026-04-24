@@ -34,8 +34,8 @@ internal static class Program
             _keyboardHook = InstallHook(WH_KEYBOARD_LL, KeyboardHookCallbackDelegate);
             _mouseHook = InstallHook(WH_MOUSE_LL, MouseHookCallbackDelegate);
 
-            Application.ApplicationExit += (_, _) => UninstallHooks();
-            AppDomain.CurrentDomain.ProcessExit += (_, _) => UninstallHooks();
+            Application.ApplicationExit += (sender, eventArgs) => UninstallHooks();
+            AppDomain.CurrentDomain.ProcessExit += (sender, eventArgs) => UninstallHooks();
 
             Application.Run();
         }
