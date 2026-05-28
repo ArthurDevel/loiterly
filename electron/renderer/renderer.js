@@ -33,6 +33,7 @@ const state = {
     openpaperdigest: createAppState('openpaperdigest', 'Open Paper Digest'),
     twitter: createAppState('twitter', 'X'),
     prompts: createAppState('prompts', 'Prompts'),
+    skills: createAppState('skills', 'Skills'),
     links: createAppState('links', 'Links'),
     conductor: createAppState('conductor', 'Agents'),
   },
