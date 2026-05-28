@@ -82,6 +82,21 @@ const PROMPT_SOURCE_CONFIGS = [
 ]
 const PROMPT_FILE_EXTENSIONS = new Set(['.md', '.markdown', '.mdx', '.txt', '.prompt'])
 const MAX_PROMPT_FILE_SIZE_BYTES = 256 * 1024
+const SKILL_SOURCE_CONFIGS = [
+  {
+    id: 'codex-skills',
+    label: 'Codex Skills',
+    rootPath: path.join(os.homedir(), '.codex', 'skills'),
+  },
+  {
+    id: 'claude-skills',
+    label: 'Claude Skills',
+    rootPath: path.join(os.homedir(), '.claude', 'skills'),
+  },
+]
+const SKILL_MANIFEST_NAME = 'SKILL.md'
+const MAX_SKILL_FILE_SIZE_BYTES = 512 * 1024
+const MAX_SKILL_SCAN_DEPTH = 6
 const APP_CONFIGS = [
   {
     id: 'browser',
@@ -197,6 +212,13 @@ const APP_CONFIGS = [
     showNavigation: false,
   },
   {
+    id: 'skills',
+    label: 'Skills',
+    type: 'local',
+    showAddressBar: false,
+    showNavigation: false,
+  },
+  {
     id: 'conductor',
     label: 'Agents',
     type: 'local',
@@ -242,7 +264,7 @@ const hostedAppHomeURLs = new Map()
 const loadedHostedAppIds = new Set()
 const localAppSignatures = new Map()
 const localAppScrollPositions = new Map()
-const localAppAccessGateIds = new Set(['prompts', 'conductor'])
+const localAppAccessGateIds = new Set(['prompts', 'skills', 'conductor'])
 const localAppAccessStates = new Map(
   Array.from(localAppAccessGateIds, (appId) => [appId, {
     granted: !IS_MAC,
@@ -2360,6 +2382,16 @@ function requestLocalAppAccess(appId) {
         lastError: permissionError,
       }
     }
+  } else if (appId === 'skills') {
+    const snapshot = loadSkillLibrarySnapshot()
+    const permissionError = findPermissionError(snapshot.sources.map((source) => source.error).filter(Boolean))
+    if (permissionError) {
+      nextState = {
+        granted: false,
+        requested: true,
+        lastError: permissionError,
+      }
+    }
   } else if (appId === 'conductor') {
     const snapshot = loadConductorSnapshot()
     const permissionError = findPermissionError(snapshot.errors)
@@ -2386,6 +2418,13 @@ function localAppAccessMarkup(appId, accessState) {
       description: 'Loiterly can browse your local prompt folders after you explicitly allow it.',
       details: 'This view reads from ~/.codex/prompts, ~/.claude/commands, and ~/.claude/agents.',
       caution: 'macOS may ask for folder access the first time this runs, especially if those folders or linked files live inside protected locations.',
+      buttonLabel: 'Continue and Request Access',
+    },
+    skills: {
+      title: 'Skills',
+      description: 'Loiterly can browse your installed agent skills after you explicitly allow it.',
+      details: 'This view reads SKILL.md manifests from ~/.codex/skills and ~/.claude/skills.',
+      caution: 'macOS may ask for folder access the first time this runs, especially if those folders or linked skills live inside protected locations.',
       buttonLabel: 'Continue and Request Access',
     },
     conductor: {
@@ -2590,6 +2629,16 @@ function refreshLocalAppView(appId, existingView = null) {
     } else {
       const snapshot = loadPromptLibrarySnapshot()
       html = promptsMarkup(snapshot)
+      signature = snapshot.signature
+    }
+  } else if (appId === 'skills') {
+    const accessState = localAppAccessState(appId)
+    if (!accessState.granted) {
+      html = localAppAccessMarkup(appId, accessState)
+      signature = JSON.stringify({ appId, accessState })
+    } else {
+      const snapshot = loadSkillLibrarySnapshot()
+      html = skillsMarkup(snapshot)
       signature = snapshot.signature
     }
   } else if (appId === 'conductor') {
@@ -3706,6 +3755,796 @@ function promptsMarkup({ sources, promptCount, refreshedAt }) {
           window.addEventListener('keydown', (event) => {
             if (event.key === 'Escape' && !promptModal.hidden) {
               closePrompt()
+            }
+          })
+
+          applyFilters()
+        </script>
+      </body>
+    </html>
+  `
+}
+
+function loadSkillLibrarySnapshot() {
+  const sources = SKILL_SOURCE_CONFIGS.map((sourceConfig) => {
+    try {
+      const skills = collectSkillEntries(sourceConfig.rootPath)
+
+      return {
+        id: sourceConfig.id,
+        label: sourceConfig.label,
+        rootPath: sourceConfig.rootPath,
+        skillCount: skills.length,
+        skills,
+      }
+    } catch (error) {
+      return {
+        id: sourceConfig.id,
+        label: sourceConfig.label,
+        rootPath: sourceConfig.rootPath,
+        skillCount: 0,
+        skills: [],
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  })
+
+  const skills = sources.flatMap((source) => source.skills)
+  const signature = JSON.stringify(
+    sources.map((source) => ({
+      id: source.id,
+      rootPath: source.rootPath,
+      error: source.error || '',
+      skills: source.skills.map((skill) => ({
+        path: skill.manifestPath,
+        size: skill.size,
+        modifiedAt: skill.modifiedAt,
+      })),
+    }))
+  )
+
+  return {
+    sources,
+    skillCount: skills.length,
+    refreshedAt: new Date().toISOString(),
+    signature,
+  }
+}
+
+function collectSkillEntries(rootPath) {
+  if (!fs.existsSync(rootPath)) {
+    return []
+  }
+
+  const skills = []
+  const visited = new Set()
+  const stack = [{ dir: rootPath, depth: 0 }]
+
+  while (stack.length > 0) {
+    const { dir, depth } = stack.pop()
+
+    let realDir
+    try {
+      realDir = fs.realpathSync(dir)
+    } catch {
+      continue
+    }
+    if (visited.has(realDir)) {
+      continue
+    }
+    visited.add(realDir)
+
+    let entries
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch (error) {
+      if (depth === 0) {
+        throw error
+      }
+      continue
+    }
+
+    for (const entry of entries) {
+      if (entry.name === '.DS_Store') {
+        continue
+      }
+
+      const absolutePath = path.join(dir, entry.name)
+
+      let stats
+      try {
+        stats = fs.statSync(absolutePath)
+      } catch {
+        continue
+      }
+
+      if (stats.isDirectory()) {
+        if (depth < MAX_SKILL_SCAN_DEPTH) {
+          stack.push({ dir: absolutePath, depth: depth + 1 })
+        }
+        continue
+      }
+
+      if (!stats.isFile() || entry.name !== SKILL_MANIFEST_NAME) {
+        continue
+      }
+      if (stats.size > MAX_SKILL_FILE_SIZE_BYTES) {
+        continue
+      }
+
+      let content
+      try {
+        content = fs.readFileSync(absolutePath, 'utf8')
+      } catch {
+        continue
+      }
+      if (!content.trim()) {
+        continue
+      }
+
+      const skillDirPath = path.dirname(absolutePath)
+      const relativePath = path.relative(rootPath, skillDirPath) || path.basename(skillDirPath)
+      const manifest = parseSkillManifest(content)
+      const directory = path.basename(skillDirPath)
+      const title = manifest.name || directory
+
+      skills.push({
+        id: `${relativePath}:${stats.mtimeMs}:${stats.size}`,
+        title,
+        description: manifest.description || skillPreview(manifest.body || content),
+        directory,
+        relativePath,
+        manifestPath: absolutePath,
+        modifiedAt: stats.mtime.toISOString(),
+        size: stats.size,
+        lineCount: content.split(/\r?\n/).length,
+        content,
+      })
+    }
+  }
+
+  skills.sort((left, right) => left.title.localeCompare(right.title))
+  return skills
+}
+
+function parseSkillManifest(content) {
+  const result = { name: '', description: '', body: `${content || ''}` }
+  const text = `${content || ''}`
+  const match = text.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n([\s\S]*))?$/)
+  if (!match) {
+    return result
+  }
+
+  result.body = match[2] || ''
+  const lines = match[1].split(/\r?\n/)
+  let currentKey = ''
+
+  for (const line of lines) {
+    const fieldMatch = line.match(/^([A-Za-z0-9_-]+):\s?(.*)$/)
+    if (fieldMatch) {
+      currentKey = fieldMatch[1].toLowerCase()
+      const value = stripYamlValue(fieldMatch[2])
+      if (currentKey === 'name') {
+        result.name = value
+      } else if (currentKey === 'description') {
+        result.description = value
+      }
+      continue
+    }
+
+    if (currentKey === 'description' && /^\s+\S/.test(line)) {
+      const extra = stripYamlValue(line.trim())
+      result.description = result.description ? `${result.description} ${extra}` : extra
+    }
+  }
+
+  return result
+}
+
+function stripYamlValue(value) {
+  let out = `${value || ''}`.trim()
+  if (
+    (out.startsWith('"') && out.endsWith('"')) ||
+    (out.startsWith("'") && out.endsWith("'"))
+  ) {
+    out = out.slice(1, -1)
+  }
+  return out.trim()
+}
+
+function skillPreview(content) {
+  const normalized = `${content || ''}`.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= 220) {
+    return normalized
+  }
+  return `${normalized.slice(0, 217)}...`
+}
+
+function skillsMarkup({ sources, skillCount, refreshedAt }) {
+  const refreshedLabel = escapeHtml(
+    new Date(refreshedAt).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    })
+  )
+
+  let skillIndex = 0
+  const skillData = sources.flatMap((source) => {
+    return source.skills.map((skill) => ({
+      ...skill,
+      skillIndex: skillIndex++,
+      sourceId: source.id,
+      sourceLabel: source.label,
+      sourceGroup: source.id.startsWith('codex-') ? 'codex' : 'claude',
+      rootPath: source.rootPath,
+    }))
+  })
+  const tableRows = skillData.map((skill) => {
+    const recordIndex = skill.skillIndex
+
+    return `
+      <tr class="prompt-row" data-source-group="${escapeHtml(skill.sourceGroup)}" data-prompt-index="${recordIndex}" data-open-prompt="${recordIndex}">
+        <td class="prompt-name-cell">
+          <div class="prompt-name">${escapeHtml(skill.title)}</div>
+          <div class="prompt-meta">${escapeHtml(skill.sourceLabel)} · ${escapeHtml(skill.relativePath)}</div>
+        </td>
+        <td class="prompt-preview-cell">${escapeHtml(skill.description)}</td>
+        <td class="prompt-action-cell">
+          <button type="button" class="table-action" data-copy-prompt="${recordIndex}">Copy</button>
+        </td>
+      </tr>
+    `
+  }).join('')
+
+  const errors = sources
+    .filter((source) => source.error)
+    .map((source) => `${source.label}: ${source.error}`)
+  const emptyMessage = skillCount < 1
+    ? 'No SKILL.md files were found in ~/.codex/skills or ~/.claude/skills.'
+    : ''
+  const statusMessage = errors.length > 0
+    ? errors.map((message) => `<div>${escapeHtml(message)}</div>`).join('')
+    : (emptyMessage ? `<div>${escapeHtml(emptyMessage)}</div>` : '')
+
+  return `
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Skills</title>
+        <style>
+          :root {
+            color-scheme: light;
+            --bg: #edf2f7;
+            --panel: rgba(255, 255, 255, 0.76);
+            --panel-strong: rgba(255, 255, 255, 0.92);
+            --border: rgba(147, 163, 184, 0.24);
+            --text: #172030;
+            --muted: #617086;
+            --accent: #2e68db;
+            --accent-soft: rgba(74, 132, 245, 0.12);
+            --accent-strong: #1f53b8;
+            --shadow: rgba(103, 120, 146, 0.12);
+            --success: #0f9d6c;
+            --danger: #d84c4c;
+          }
+          * {
+            box-sizing: border-box;
+          }
+          body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 28px;
+            background:
+              radial-gradient(circle at top left, rgba(255,255,255,0.86), rgba(255,255,255,0) 34%),
+              linear-gradient(180deg, #fbfcfe 0%, var(--bg) 100%);
+            color: var(--text);
+            font-family: "SF Pro Display", "Helvetica Neue", sans-serif;
+          }
+          header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 18px;
+          }
+          h1 {
+            margin: 0;
+            letter-spacing: -0.04em;
+            font-size: 28px;
+          }
+          .subtitle {
+            margin: 4px 0 0;
+            color: var(--muted);
+            line-height: 1.4;
+          }
+          .subtitle code {
+            font-family: "SF Mono", "Menlo", monospace;
+            font-size: 12px;
+          }
+          .meta {
+            text-align: right;
+            color: var(--muted);
+            font-size: 12px;
+          }
+          .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding: 14px 16px;
+            border-radius: 18px;
+            background: linear-gradient(180deg, var(--panel-strong), var(--panel));
+            border: 1px solid var(--border);
+            box-shadow:
+              0 14px 30px var(--shadow),
+              inset 0 1px 0 rgba(255,255,255,0.84);
+          }
+          .toolbar-left,
+          .toolbar-right {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+          }
+          .filter-group {
+            display: inline-flex;
+            padding: 4px;
+            border-radius: 999px;
+            background: rgba(74, 132, 245, 0.08);
+          }
+          .filter-button {
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            border-radius: 999px;
+            padding: 8px 14px;
+            font-weight: 700;
+            cursor: pointer;
+          }
+          .filter-button.is-active {
+            background: white;
+            color: var(--accent-strong);
+            box-shadow: 0 8px 18px rgba(103, 120, 146, 0.12);
+          }
+          .toolbar-right input {
+            width: min(320px, 56vw);
+            border: 1px solid rgba(123, 141, 167, 0.24);
+            border-radius: 12px;
+            padding: 10px 12px;
+            background: rgba(255,255,255,0.86);
+            color: var(--text);
+          }
+          .toolbar-right button,
+          .table-action,
+          .modal-copy,
+          .modal-close {
+            border: none;
+            border-radius: 12px;
+            padding: 10px 14px;
+            background: var(--accent);
+            color: white;
+            font-weight: 700;
+            cursor: pointer;
+          }
+          .modal-close {
+            background: rgba(74, 132, 245, 0.12);
+            color: var(--accent-strong);
+          }
+          .status-row {
+            min-height: 20px;
+            margin-bottom: 12px;
+            color: var(--muted);
+            font-size: 13px;
+          }
+          .status-row.is-success {
+            color: var(--success);
+          }
+          .status-row.is-error {
+            color: var(--danger);
+          }
+          .table-shell {
+            overflow: hidden;
+            border-radius: 20px;
+            background: linear-gradient(180deg, var(--panel-strong), var(--panel));
+            border: 1px solid var(--border);
+            box-shadow:
+              0 16px 36px rgba(103, 120, 146, 0.08),
+              inset 0 1px 0 rgba(255,255,255,0.84);
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          thead th {
+            padding: 14px 18px;
+            text-align: left;
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--muted);
+            border-bottom: 1px solid rgba(147, 163, 184, 0.16);
+          }
+          tbody td {
+            padding: 16px 18px;
+            vertical-align: top;
+            border-bottom: 1px solid rgba(147, 163, 184, 0.12);
+          }
+          .prompt-row {
+            cursor: pointer;
+            transition: background-color 120ms ease, box-shadow 120ms ease;
+          }
+          .prompt-row:hover td {
+            background: rgba(74, 132, 245, 0.06);
+          }
+          .prompt-row:hover .prompt-name {
+            color: var(--accent-strong);
+          }
+          tbody tr:last-child td {
+            border-bottom: none;
+          }
+          .prompt-name {
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.35;
+          }
+          .prompt-meta {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.4;
+            word-break: break-word;
+          }
+          .prompt-preview-cell {
+            color: var(--muted-strong);
+            line-height: 1.5;
+          }
+          .prompt-action-cell {
+            width: 112px;
+            text-align: right;
+          }
+          .empty-state {
+            padding: 28px;
+            text-align: center;
+            color: var(--muted);
+          }
+          .empty-state strong {
+            display: block;
+            margin-bottom: 6px;
+            color: var(--text);
+          }
+          .modal[hidden] {
+            display: none !important;
+          }
+          .modal {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background: rgba(15, 23, 42, 0.24);
+            backdrop-filter: blur(8px);
+          }
+          .modal-card {
+            width: min(920px, 100%);
+            max-height: min(80vh, 900px);
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            border-radius: 24px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,253,0.96));
+            border: 1px solid rgba(147, 163, 184, 0.2);
+            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+          }
+          .modal-header,
+          .modal-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 18px 20px;
+          }
+          .modal-header {
+            border-bottom: 1px solid rgba(147, 163, 184, 0.14);
+          }
+          .modal-footer {
+            border-top: 1px solid rgba(147, 163, 184, 0.14);
+          }
+          .modal-title {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+          }
+          .modal-subtitle {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.4;
+          }
+          .modal-body {
+            padding: 0 20px 20px;
+          }
+          .modal-body pre {
+            margin: 0;
+            padding: 18px;
+            height: 100%;
+            max-height: min(56vh, 720px);
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            border-radius: 18px;
+            background: rgba(20, 31, 48, 0.94);
+            color: #f2f7ff;
+            font-family: "SF Mono", "Menlo", monospace;
+            font-size: 12px;
+            line-height: 1.55;
+          }
+          @media (max-width: 760px) {
+            body {
+              padding: 18px;
+            }
+            header,
+            .toolbar,
+            .modal-header,
+            .modal-footer {
+              flex-direction: column;
+              align-items: flex-start;
+            }
+            .toolbar-right input {
+              width: 100%;
+            }
+            thead {
+              display: none;
+            }
+            tbody,
+            tr,
+            td {
+              display: block;
+              width: 100%;
+            }
+            tbody td {
+              padding-top: 10px;
+              padding-bottom: 10px;
+            }
+            .prompt-action-cell {
+              text-align: left;
+              padding-top: 0;
+              padding-bottom: 16px;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <header>
+          <div>
+            <h1>Skills</h1>
+            <p class="subtitle">
+              Browse installed skills from <code>~/.codex</code> and <code>~/.claude</code>.
+            </p>
+          </div>
+          <div class="meta">
+            Last refreshed<br />
+            <strong>${refreshedLabel}</strong>
+          </div>
+        </header>
+
+        <section class="toolbar">
+          <div class="toolbar-left">
+            <div class="filter-group">
+              <button class="filter-button is-active" type="button" data-filter="all">All</button>
+              <button class="filter-button" type="button" data-filter="claude">Claude</button>
+              <button class="filter-button" type="button" data-filter="codex">Codex</button>
+            </div>
+            <div class="meta">
+              <strong id="results-count">${skillCount}</strong> skills
+            </div>
+          </div>
+          <div class="toolbar-right">
+            <input id="prompt-search" type="search" placeholder="Search names, descriptions, or SKILL.md text" autocomplete="off" spellcheck="false" />
+            <button id="refresh-prompts" type="button">Refresh</button>
+          </div>
+        </section>
+
+        <div id="copy-status" class="status-row${errors.length > 0 ? ' is-error' : ''}" aria-live="polite">${statusMessage}</div>
+
+        <section class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Description</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="prompt-table-body">
+              ${tableRows}
+            </tbody>
+          </table>
+          <div id="empty-state" class="empty-state" hidden>
+            <strong>No skills match</strong>
+            <span>Try a different search or switch Claude/Codex.</span>
+          </div>
+        </section>
+
+        <div id="prompt-modal" class="modal" hidden>
+          <div class="modal-card">
+            <div class="modal-header">
+              <div>
+                <div id="modal-title" class="modal-title"></div>
+                <div id="modal-subtitle" class="modal-subtitle"></div>
+              </div>
+              <button id="modal-close-top" class="modal-close" type="button">Close</button>
+            </div>
+            <div class="modal-body">
+              <pre id="modal-content"></pre>
+            </div>
+            <div class="modal-footer">
+              <div id="modal-feedback" class="status-row" style="margin: 0;"></div>
+              <div class="toolbar-right">
+                <button id="modal-close-bottom" class="modal-close" type="button">Close</button>
+                <button id="modal-copy" class="modal-copy" type="button">Copy SKILL.md</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <script>
+          const skillRecords = ${serializeForInlineScript(skillData)}
+          const searchInput = document.getElementById('prompt-search')
+          const refreshButton = document.getElementById('refresh-prompts')
+          const resultsCount = document.getElementById('results-count')
+          const statusRow = document.getElementById('copy-status')
+          const rows = Array.from(document.querySelectorAll('.prompt-row'))
+          const filterButtons = Array.from(document.querySelectorAll('.filter-button'))
+          const emptyState = document.getElementById('empty-state')
+          const skillModal = document.getElementById('prompt-modal')
+          const modalTitle = document.getElementById('modal-title')
+          const modalSubtitle = document.getElementById('modal-subtitle')
+          const modalContent = document.getElementById('modal-content')
+          const modalFeedback = document.getElementById('modal-feedback')
+          const modalCopy = document.getElementById('modal-copy')
+          const modalCloseTop = document.getElementById('modal-close-top')
+          const modalCloseBottom = document.getElementById('modal-close-bottom')
+          let activeFilter = 'all'
+          let activeSkillIndex = -1
+          let statusTimer = null
+          let copyButtonTimer = null
+
+          const showStatus = (element, message, className = '') => {
+            element.textContent = message
+            element.classList.toggle('is-success', className === 'success')
+            element.classList.toggle('is-error', className === 'error')
+            if (statusTimer) {
+              window.clearTimeout(statusTimer)
+            }
+            statusTimer = window.setTimeout(() => {
+              if (element === statusRow && ${errors.length} > 0) {
+                return
+              }
+              element.textContent = ''
+              element.classList.remove('is-success')
+              element.classList.remove('is-error')
+            }, 1800)
+          }
+
+          const openSkill = (index) => {
+            const record = skillRecords[index]
+            if (!record) {
+              return
+            }
+
+            activeSkillIndex = index
+            modalTitle.textContent = record.title
+            modalSubtitle.textContent = record.sourceLabel + ' · ' + record.relativePath
+            modalContent.textContent = record.content
+            modalFeedback.textContent = ''
+            skillModal.hidden = false
+          }
+
+          const closeSkill = () => {
+            skillModal.hidden = true
+            activeSkillIndex = -1
+            modalFeedback.textContent = ''
+          }
+
+          const applyFilters = () => {
+            const query = (searchInput.value || '').trim().toLowerCase()
+            let visibleCount = 0
+
+            rows.forEach((row) => {
+              const index = Number.parseInt(row.dataset.promptIndex || '-1', 10)
+              const record = skillRecords[index]
+              if (!record) {
+                row.hidden = true
+                return
+              }
+
+              const matchesSource = activeFilter === 'all' || record.sourceGroup === activeFilter
+              const haystack = [
+                record.title,
+                record.relativePath,
+                record.sourceLabel,
+                record.description,
+                record.content,
+              ].join('\\n').toLowerCase()
+              const matchesQuery = !query || haystack.includes(query)
+              const isVisible = matchesSource && matchesQuery
+              row.hidden = !isVisible
+
+              if (isVisible) {
+                visibleCount += 1
+              }
+            })
+
+            resultsCount.textContent = String(visibleCount)
+            emptyState.hidden = visibleCount > 0
+          }
+
+          document.addEventListener('click', async (event) => {
+            const filterTrigger = event.target.closest('[data-filter]')
+            if (filterTrigger) {
+              activeFilter = filterTrigger.dataset.filter || 'all'
+              filterButtons.forEach((button) => {
+                button.classList.toggle('is-active', button.dataset.filter === activeFilter)
+              })
+              applyFilters()
+              return
+            }
+
+            const copyTrigger = event.target.closest('[data-copy-prompt]')
+            if (copyTrigger) {
+              const index = Number.parseInt(copyTrigger.dataset.copyPrompt || '-1', 10)
+              const record = skillRecords[index]
+              if (record) {
+                await window.loiterlyLocalApp.copyText(record.content)
+                showStatus(statusRow, 'SKILL.md copied', 'success')
+                if (copyButtonTimer) {
+                  window.clearTimeout(copyButtonTimer)
+                }
+                copyTrigger.textContent = 'Copied'
+                copyButtonTimer = window.setTimeout(() => {
+                  copyTrigger.textContent = 'Copy'
+                }, 1200)
+              }
+              return
+            }
+
+            const openTrigger = event.target.closest('tr[data-open-prompt]')
+            if (openTrigger) {
+              const index = Number.parseInt(openTrigger.dataset.openPrompt || '-1', 10)
+              openSkill(index)
+              return
+            }
+
+            if (event.target === skillModal) {
+              closeSkill()
+            }
+          })
+
+          modalCopy.addEventListener('click', async () => {
+            const record = skillRecords[activeSkillIndex]
+            if (!record) {
+              return
+            }
+
+            await window.loiterlyLocalApp.copyText(record.content)
+            showStatus(modalFeedback, 'SKILL.md copied', 'success')
+          })
+
+          modalCloseTop.addEventListener('click', closeSkill)
+          modalCloseBottom.addEventListener('click', closeSkill)
+
+          refreshButton.addEventListener('click', () => {
+            window.loiterlyLocalApp.refresh('skills')
+          })
+
+          searchInput.addEventListener('input', applyFilters)
+          window.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !skillModal.hidden) {
+              closeSkill()
             }
           })
 
