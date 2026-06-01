@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld('loiterlyLocalApp', {
   requestAccess: (appId) => ipcRenderer.invoke('local-app:request-access', appId),
   refresh: (appId) => ipcRenderer.send('local-app:refresh', appId),
   revealPath: (targetPath) => ipcRenderer.send('local-app:reveal-path', targetPath),
+  markTwentyTwentyDone: () => ipcRenderer.invoke('twenty-twenty:mark-done'),
 })

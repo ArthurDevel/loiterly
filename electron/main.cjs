@@ -18,6 +18,7 @@ const {
   clipboard,
   dialog,
   Menu,
+  Notification,
   Tray,
   WebContentsView,
   globalShortcut,
@@ -43,6 +44,10 @@ const COMPANION_OFFSET = { x: 10, y: -14 }
 const ACTIVE_SPACE_HOP_DELAY_MS = 140
 const CONDUCTOR_REFRESH_MS = 5000
 const RELEASE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+const TWENTY_TWENTY_INTERVAL_MS = 20 * 60 * 1000
+const TWENTY_TWENTY_GRACE_MS = 2 * 60 * 1000
+const TWENTY_TWENTY_LOOK_AWAY_SECONDS = 20
+const TWENTY_TWENTY_MAX_EVENTS = 5000
 const CONTENT_VIEW_RADIUS = 23
 const SHARED_REMOTE_PARTITION = 'persist:loiterly-browser'
 const GITHUB_RELEASES_URL = 'https://github.com/ArthurDevel/loiterly/releases'
@@ -225,6 +230,13 @@ const APP_CONFIGS = [
     showAddressBar: false,
     showNavigation: false,
   },
+  {
+    id: 'twenty-twenty',
+    label: '20-20',
+    type: 'local',
+    showAddressBar: false,
+    showNavigation: false,
+  },
 ]
 
 let tray = null
@@ -239,6 +251,9 @@ let isCompanionSuppressedForTyping = false
 let companionInterval = null
 let conductorRefreshInterval = null
 let releaseCheckInterval = null
+let twentyTwentyInterval = null
+let twentyTwentyGraceTimeout = null
+let twentyTwentyPending = null
 let companionPosition = null
 let lastCursorPoint = null
 let lastCompanionUnreadCount = null
@@ -2651,6 +2666,10 @@ function refreshLocalAppView(appId, existingView = null) {
       html = conductorMarkup(snapshot)
       signature = snapshot.signature
     }
+  } else if (appId === 'twenty-twenty') {
+    const snapshot = loadTwentyTwentySnapshot()
+    html = twentyTwentyMarkup(snapshot)
+    signature = snapshot.signature
   }
 
   if (!html) {
@@ -2866,6 +2885,15 @@ function defaultAppState(appId) {
 }
 
 function appState(appId, conductorSnapshot = null) {
+  if (appId === 'twenty-twenty') {
+    return {
+      ...defaultAppState(appId),
+      title: '20-20',
+      unreadCount: twentyTwentyPending ? 1 : 0,
+      hasAlert: Boolean(twentyTwentyPending),
+    }
+  }
+
   if (appId === 'conductor') {
     if (!localAppAccessState('conductor').granted) {
       return {
@@ -4897,6 +4925,299 @@ function linksMarkup() {
   `
 }
 
+function twentyTwentyDataPath() {
+  return path.join(app.getPath('userData'), 'twenty-twenty.json')
+}
+
+function loadTwentyTwentyEvents() {
+  try {
+    const raw = fs.readFileSync(twentyTwentyDataPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    const events = Array.isArray(parsed?.events) ? parsed.events : []
+    return events
+      .filter((event) =>
+        event &&
+        Number.isFinite(event.ts) &&
+        (event.status === 'done' || event.status === 'missed')
+      )
+      .map((event) => ({ ts: event.ts, status: event.status }))
+  } catch (error) {
+    return []
+  }
+}
+
+function saveTwentyTwentyEvents(events) {
+  const trimmed = events.slice(-TWENTY_TWENTY_MAX_EVENTS)
+  try {
+    fs.writeFileSync(twentyTwentyDataPath(), JSON.stringify({ events: trimmed }, null, 2))
+  } catch (error) {
+    console.warn('[20-20] unable to persist data', error)
+  }
+}
+
+function recordTwentyTwentyEvent(status) {
+  const events = loadTwentyTwentyEvents()
+  events.push({ ts: Date.now(), status })
+  saveTwentyTwentyEvents(events)
+}
+
+function twentyTwentyDateKey(ts) {
+  const date = new Date(ts)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function loadTwentyTwentySnapshot() {
+  const events = loadTwentyTwentyEvents()
+  const byDay = new Map()
+
+  for (const event of events) {
+    const key = twentyTwentyDateKey(event.ts)
+    const bucket = byDay.get(key) || { date: key, done: 0, missed: 0 }
+    bucket[event.status] += 1
+    byDay.set(key, bucket)
+  }
+
+  const days = Array.from(byDay.values()).sort((left, right) => right.date.localeCompare(left.date))
+  const pending = Boolean(twentyTwentyPending)
+
+  return {
+    days,
+    pending,
+    lookAwaySeconds: TWENTY_TWENTY_LOOK_AWAY_SECONDS,
+    signature: JSON.stringify({ days, pending }),
+  }
+}
+
+function refreshTwentyTwentyView() {
+  localAppSignatures.delete('twenty-twenty')
+  refreshLocalAppView('twenty-twenty')
+  emitState()
+}
+
+function startTwentyTwentyReminders() {
+  if (twentyTwentyInterval) {
+    return
+  }
+
+  twentyTwentyInterval = setInterval(() => {
+    fireTwentyTwentyReminder()
+  }, TWENTY_TWENTY_INTERVAL_MS)
+}
+
+function fireTwentyTwentyReminder() {
+  // Only one reminder is ever outstanding; if the last one was never answered,
+  // close it out as missed before opening a new window.
+  if (twentyTwentyPending) {
+    resolveTwentyTwentyPending('missed')
+  }
+
+  twentyTwentyPending = { firedAt: Date.now() }
+
+  if (Notification.isSupported()) {
+    try {
+      const notification = new Notification({
+        title: '20-20-20 break',
+        body: `Look about 20 feet away for ${TWENTY_TWENTY_LOOK_AWAY_SECONDS} seconds, then mark “I did this” in Loiterly.`,
+      })
+      notification.show()
+    } catch (error) {
+      console.warn('[20-20] unable to show notification', error)
+    }
+  }
+
+  twentyTwentyGraceTimeout = setTimeout(() => {
+    resolveTwentyTwentyPending('missed')
+  }, TWENTY_TWENTY_GRACE_MS)
+
+  refreshTwentyTwentyView()
+}
+
+function resolveTwentyTwentyPending(status) {
+  if (!twentyTwentyPending) {
+    return false
+  }
+
+  if (twentyTwentyGraceTimeout) {
+    clearTimeout(twentyTwentyGraceTimeout)
+    twentyTwentyGraceTimeout = null
+  }
+
+  twentyTwentyPending = null
+  recordTwentyTwentyEvent(status)
+  refreshTwentyTwentyView()
+  return true
+}
+
+function twentyTwentyMarkup(snapshot) {
+  const { days, pending, lookAwaySeconds } = snapshot
+  const today = twentyTwentyDateKey(Date.now())
+  const todayStats = days.find((day) => day.date === today) || { done: 0, missed: 0 }
+  const totalToday = todayStats.done + todayStats.missed
+  const todayRate = totalToday > 0 ? Math.round((todayStats.done / totalToday) * 100) : 0
+
+  const formatDay = (key) => {
+    const [year, month, day] = key.split('-').map((part) => Number(part))
+    const date = new Date(year, month - 1, day)
+    return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+  }
+
+  const pendingBanner = pending
+    ? `
+        <div class="pending">
+          <div class="pending__text">
+            <strong>Time to look away 👀</strong>
+            <span>Rest your eyes on something ~20 feet away for ${lookAwaySeconds} seconds.</span>
+          </div>
+          <button id="did-this" type="button">I did this</button>
+        </div>
+      `
+    : ''
+
+  const rows = days.length
+    ? days
+        .map((day) => {
+          const total = day.done + day.missed
+          const rate = total > 0 ? Math.round((day.done / total) * 100) : 0
+          return `
+            <li class="row">
+              <span class="row__date">${formatDay(day.date)}</span>
+              <span class="row__counts">
+                <span class="pill pill--done">${day.done} done</span>
+                <span class="pill pill--missed">${day.missed} missed</span>
+              </span>
+              <span class="row__rate">${rate}%</span>
+            </li>
+          `
+        })
+        .join('')
+    : `<li class="empty">No breaks recorded yet. The first reminder arrives within 20 minutes of opening Loiterly.</li>`
+
+  return `
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>20-20</title>
+        <style>
+          :root { color-scheme: light; }
+          body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 28px;
+            background:
+              radial-gradient(circle at top left, rgba(255,255,255,0.85), rgba(255,255,255,0) 38%),
+              linear-gradient(180deg, #fbfcfe 0%, #edf2f7 100%);
+            color: #172030;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+          }
+          h1 { margin: 0 0 4px; font-size: 24px; letter-spacing: -0.03em; }
+          .subtitle { margin: 0 0 20px; color: #617086; font-size: 13px; }
+          .pending {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 20px;
+            padding: 16px 18px;
+            border-radius: 18px;
+            background: linear-gradient(135deg, #ffedd5 0%, #fde68a 100%);
+            border: 1px solid rgba(234,179,8,0.35);
+            box-shadow: 0 14px 30px rgba(202,138,4,0.18);
+          }
+          .pending__text { display: flex; flex-direction: column; gap: 4px; }
+          .pending__text strong { font-size: 15px; }
+          .pending__text span { font-size: 13px; color: #7c5b12; }
+          .pending button {
+            flex-shrink: 0;
+            border: none;
+            border-radius: 12px;
+            padding: 10px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #fff;
+            background: #ea580c;
+            cursor: pointer;
+          }
+          .pending button:hover { background: #c2410c; }
+          .pending button:disabled { opacity: 0.6; cursor: default; }
+          .summary {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+            max-width: 560px;
+          }
+          .card {
+            flex: 1;
+            padding: 16px 18px;
+            border-radius: 18px;
+            background: rgba(255,255,255,0.72);
+            border: 1px solid rgba(173,184,201,0.24);
+            box-shadow: 0 14px 30px rgba(103,120,146,0.1), inset 0 1px 0 rgba(255,255,255,0.92);
+          }
+          .card__value { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
+          .card__label { margin-top: 2px; font-size: 12px; color: #617086; }
+          ul { list-style: none; margin: 0; padding: 0; max-width: 560px; }
+          .row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            border-radius: 14px;
+            background: rgba(255,255,255,0.6);
+            border: 1px solid rgba(173,184,201,0.2);
+            margin-bottom: 8px;
+          }
+          .row__date { flex: 1; font-weight: 600; font-size: 14px; }
+          .row__counts { display: flex; gap: 8px; }
+          .pill { font-size: 12px; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
+          .pill--done { background: rgba(34,197,94,0.15); color: #15803d; }
+          .pill--missed { background: rgba(148,163,184,0.18); color: #64748b; }
+          .row__rate { width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: #172030; font-weight: 600; }
+          .empty { padding: 18px; border-radius: 14px; background: rgba(255,255,255,0.6); color: #617086; font-size: 13px; }
+        </style>
+      </head>
+      <body>
+        <h1>20-20</h1>
+        <p class="subtitle">Every 20 minutes, look ~20 feet away for 20 seconds.</p>
+        ${pendingBanner}
+        <div class="summary">
+          <div class="card">
+            <div class="card__value">${todayStats.done}</div>
+            <div class="card__label">Done today</div>
+          </div>
+          <div class="card">
+            <div class="card__value">${todayStats.missed}</div>
+            <div class="card__label">Missed today</div>
+          </div>
+          <div class="card">
+            <div class="card__value">${todayRate}%</div>
+            <div class="card__label">Completion today</div>
+          </div>
+        </div>
+        <ul>${rows}</ul>
+        <script>
+          const button = document.getElementById('did-this')
+          if (button) {
+            button.addEventListener('click', async () => {
+              button.disabled = true
+              button.textContent = 'Nice work 🎉'
+              try {
+                await window.loiterlyLocalApp.markTwentyTwentyDone()
+              } catch (error) {
+                button.disabled = false
+                button.textContent = 'I did this'
+              }
+            })
+          }
+        </script>
+      </body>
+    </html>
+  `
+}
+
 function loadClaudeCliSnapshot() {
   if (!fs.existsSync(CLAUDE_SESSIONS_PATH)) {
     return {
@@ -6341,6 +6662,10 @@ ipcMain.handle('local-app:request-access', async (_event, appId) => {
   return nextState
 })
 
+ipcMain.handle('twenty-twenty:mark-done', async () => {
+  return resolveTwentyTwentyPending('done')
+})
+
 ipcMain.on('local-app:reveal-path', (_event, targetPath) => {
   if (!isPromptPathAllowed(targetPath)) {
     return
@@ -6395,6 +6720,7 @@ app.whenReady().then(() => {
   registerShortcuts()
   startConductorRefresh()
   startReleaseChecks()
+  startTwentyTwentyReminders()
   void refreshGitHubIssuesRepos()
   setActiveApp(activeApp)
 

@@ -36,6 +36,7 @@ const state = {
     skills: createAppState('skills', 'Skills'),
     links: createAppState('links', 'Links'),
     conductor: createAppState('conductor', 'Agents'),
+    'twenty-twenty': createAppState('twenty-twenty', '20-20'),
   },
   githubIssues: {
     owner: 'ArthurDevel',
